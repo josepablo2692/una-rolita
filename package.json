@@ -1,0 +1,9 @@
+{
+  "name": "una-rolita",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rocola digital para sport-bars, gimnasios y clubes nocturnos",
+  "scripts": {
+    "dev:api": "pnpm --filter api run start:dev"
+  }
+}

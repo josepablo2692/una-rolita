@@ -19,19 +19,23 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Endpoint: cancelar un pedido en cola
 
 ## Épica 3 — Créditos y pagos
-- [ ] Modelo de créditos y transacciones (transferencia directa)
-- [ ] Flujo: reportar comprobante de pago (referencia + foto)
-- [ ] Panel: admin del local confirma o rechaza transacción
-- [ ] Acreditación atómica del saldo al confirmar (Unit of Work)
+- [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
+- [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
+- [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
+- [ ] Acreditación atómica del saldo (Unit of Work)
 - [ ] Regla: canción gratis por registro (con control antifraude)
 - [ ] Expiración de créditos no usados (configurable)
+- [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
 
-## Épica 4 — Integración con Spotify
-- [ ] OAuth de Spotify Premium para la cuenta del local
-- [ ] Adapter de Spotify (`SpotifyAdapter` implementando `MusicProviderAdapter`)
-- [ ] Agregar canción a la cola real de Spotify Connect
-- [ ] Sincronizar catálogo/búsqueda de canciones
-- [ ] Manejo de errores si el dispositivo del local se desconecta
+## Épica 4 — Reproducción: Spotify o DJ en vivo
+- [ ] Campo `playback_mode` por local: `spotify_managed` o `dj_manual`
+- [ ] **Modo Spotify**: OAuth de Spotify Premium para la cuenta del local
+- [ ] **Modo Spotify**: Adapter (`SpotifyAdapter` implementando `MusicProviderAdapter`)
+- [ ] **Modo Spotify**: agregar canción a la cola real de Spotify Connect
+- [ ] **Modo Spotify**: manejo de errores si el dispositivo del local se desconecta
+- [ ] **Modo DJ manual**: botón "marcar como reproducida" en el panel (sin integración externa)
+- [ ] **Modo DJ manual**: el propio DJ lee la dedicatoria o decide usar el sintetizador
+- [ ] Sincronizar catálogo/búsqueda de canciones (solo aplica en modo Spotify)
 
 ## Épica 5 — Dedicatorias
 - [ ] Formulario de dedicatoria (mensaje, anónimo o no)
