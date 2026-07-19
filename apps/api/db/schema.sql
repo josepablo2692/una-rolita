@@ -13,6 +13,7 @@ CREATE TABLE venues (
     name            VARCHAR(150) NOT NULL,
     type            VARCHAR(30) NOT NULL CHECK (type IN ('bar', 'gym', 'strip_club', 'live_music')),
     playlist_mode   VARCHAR(20) NOT NULL DEFAULT 'free' CHECK (playlist_mode IN ('free', 'curated')),
+    playback_mode   VARCHAR(20) NOT NULL DEFAULT 'spotify_managed' CHECK (playback_mode IN ('spotify_managed', 'dj_manual')), -- con DJ en vivo, no requiere Spotify
     cooldown_hours  INT NOT NULL DEFAULT 3,          -- horas antes de repetir una canción
     queue_jump_price NUMERIC(10,2) NOT NULL DEFAULT 5.00,
     dedication_price NUMERIC(10,2) NOT NULL DEFAULT 3.00,
@@ -51,7 +52,7 @@ CREATE TABLE users (
 
 CREATE TABLE roles (
     id      SERIAL PRIMARY KEY,
-    name    VARCHAR(30) NOT NULL UNIQUE  -- 'super_admin', 'venue_admin', 'dj', 'staff', 'customer'
+    name    VARCHAR(30) NOT NULL UNIQUE  -- 'super_admin', 'venue_admin', 'dj', 'staff', 'customer' (staff = mesero/recepcion, puede cargar creditos)
 );
 
 CREATE TABLE user_venue_roles (
@@ -86,14 +87,19 @@ CREATE TABLE credit_transactions (
     user_id         UUID NOT NULL REFERENCES users(id),
     venue_id        UUID NOT NULL REFERENCES venues(id),
     amount          NUMERIC(10,2) NOT NULL CHECK (amount > 0),
-    status          VARCHAR(20) NOT NULL DEFAULT 'pending'
-                        CHECK (status IN ('pending', 'in_review', 'confirmed', 'rejected')),
-    bank_reference  VARCHAR(100),                       -- referencia/últimos dígitos que reporta el usuario
-    receipt_url     TEXT,                                -- foto del comprobante
-    reviewed_by     UUID REFERENCES users(id),            -- admin del local que confirmó
+    payment_method  VARCHAR(20) NOT NULL DEFAULT 'efectivo_recepcion'
+                        CHECK (payment_method IN ('efectivo_recepcion', 'tarjeta_recepcion', 'transferencia_directa')), -- transferencia_directa en pausa por ahora
+    status          VARCHAR(20) NOT NULL DEFAULT 'confirmed'
+                        CHECK (status IN ('pending', 'in_review', 'confirmed', 'rejected')), -- efectivo/tarjeta en recepcion nace 'confirmed' (no hay espera)
+    bank_reference  VARCHAR(100),                       -- solo aplica si payment_method = transferencia_directa
+    receipt_url     TEXT,                                -- solo aplica si payment_method = transferencia_directa
+    created_by_staff_id UUID REFERENCES users(id),        -- staff/admin que registro la carga en recepcion (auditoria)
+    reviewed_by     UUID REFERENCES users(id),            -- admin del local que confirmo (solo aplica a transferencia_directa)
     reviewed_at     TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_credit_transactions_staff_audit ON credit_transactions (created_by_staff_id, created_at);
 
 -- ------------------------------------------------------------
 -- Catálogo de canciones e historial (para el cooldown)
