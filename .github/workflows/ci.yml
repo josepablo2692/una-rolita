@@ -9,6 +9,27 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+
+    # Postgres "de usar y tirar" — vive solo durante esta ejecución del CI,
+    # no tiene nada que ver con tu Postgres de Docker en tu computadora.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: una_rolita
+          POSTGRES_PASSWORD: una_rolita_dev
+          POSTGRES_DB: una_rolita
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://una_rolita:una_rolita_dev@localhost:5432/una_rolita
+
     steps:
       - name: Descargar código
         uses: actions/checkout@v4
@@ -23,6 +44,9 @@ jobs:
 
       - name: Instalar dependencias
         run: pnpm install --frozen-lockfile
+
+      - name: Cargar schema.sql en el Postgres del CI
+        run: PGPASSWORD=una_rolita_dev psql -h localhost -U una_rolita -d una_rolita -f apps/api/db/schema.sql
 
       - name: Lint
         run: pnpm --filter api run lint
