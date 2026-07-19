@@ -1,0 +1,31 @@
+version: "3.9"
+
+# ============================================================
+# Una Rolita — servicios de infraestructura local
+# Uso: docker compose up -d
+# ============================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: una-rolita-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: una_rolita
+      POSTGRES_PASSWORD: una_rolita_dev
+      POSTGRES_DB: una_rolita
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./apps/api/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+
+  redis:
+    image: redis:7-alpine
+    container_name: una-rolita-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
