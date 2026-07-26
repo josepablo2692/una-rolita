@@ -14,6 +14,9 @@ import { VenuesService } from './venues.service';
   ],
   controllers: [VenuesController],
   providers: [VenuesService],
-  exports: [VenuesService], // para que otros módulos (queue, credits) puedan usarlo
+  exports: [
+    VenuesService,
+    TypeOrmModule, // permite que otros módulos (auth, queue) inyecten Repository<Venue> y Repository<VenueTable>
+  ], // para que otros módulos (queue, credits) puedan usarlo
 })
 export class VenuesModule {}
