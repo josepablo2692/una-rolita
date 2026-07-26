@@ -5,18 +5,14 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
-//Aplicamos de nuevo DRY para proximos transformar datos numericos
+//Aplicamos DRY para poder tranformar los datos de PG a TypeORM
 import { NumericColumnTransformer } from '../../../common/transformers/numeric.transformer';
-
-// Traduce la tabla `venues` de schema.sql a una clase de TypeScript.
-// TypeORM usa esta clase para leer/escribir filas de esa tabla sin que
-// tengamos que escribir SQL a mano en cada consulta.
 
 export type VenueType = 'bar' | 'gym' | 'strip_club' | 'live_music';
 export type PlaylistMode = 'free' | 'curated';
 export type PlaybackMode = 'spotify_managed' | 'dj_manual';
 
-@Entity('venues') // nombre exacto de la tabla en Postgres
+@Entity('venues')
 export class Venue {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

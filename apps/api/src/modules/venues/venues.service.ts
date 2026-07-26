@@ -34,16 +34,6 @@ export class VenuesService {
     return venue;
   }
 
-  // ------------------------------------------------------------
-  // Actualización de precios, con sugerencia automática del combo
-  // ------------------------------------------------------------
-
-  /**
-   * Fórmula de sugerencia de negocio: salto + dedicatoria - 1.
-   * Existe como método propio (no inline) para que la regla tenga
-   * un solo lugar de verdad — si el descuento cambia de Q1 a Q2 en
-   * el futuro, se toca aquí y en ningún otro lado (principio DRY).
-   */
   calculateSuggestedComboPrice(
     queueJumpPrice: number,
     dedicationPrice: number,
@@ -57,9 +47,6 @@ export class VenuesService {
     const newJumpPrice = dto.queueJumpPrice ?? venue.queueJumpPrice;
     const newDedicationPrice = dto.dedicationPrice ?? venue.dedicationPrice;
 
-    // Si el admin NO mandó un comboPrice explícito, pero sí cambió
-    // alguno de los otros dos precios, recalculamos la sugerencia.
-    // Si SÍ lo mandó explícito, se respeta su decisión tal cual.
     const comboPrice =
       dto.comboJumpDedicationPrice ??
       this.calculateSuggestedComboPrice(newJumpPrice, newDedicationPrice);
@@ -70,10 +57,6 @@ export class VenuesService {
 
     return this.venueRepository.save(venue);
   }
-
-  // ------------------------------------------------------------
-  // Mesas (VenueTable) — aquí nace el qr_code_token de cada mesa
-  // ------------------------------------------------------------
 
   async createTable(
     venueId: string,
