@@ -4,12 +4,14 @@ import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { VenuesModule } from './modules/venues/venues.module';
 import { ConfigModule } from '@nestjs/config';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }), // lee el .env y lo deja disponible en toda la app
     DatabaseModule,
     VenuesModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

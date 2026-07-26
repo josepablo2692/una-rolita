@@ -1,25 +1,24 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { Venue } from './entities/venue.entity';
+import { VenueTable } from './entities/venue-table.entity';
 import { CreateVenueDto } from './dto/create-venue.dto';
+import { CreateVenueTableDto } from './dto/create-venue-table.dto';
 
-// El Service es donde vive la LÓGICA DE NEGOCIO real.
-// El Controller nunca habla directo con la base de datos — siempre
-// le pide el trabajo al Service, y el Service usa el Repository
-// (una herramienta que TypeORM nos da automáticamente) para
-// leer/escribir en Postgres.
-
-@Injectable() // le dice a NestJS "esta clase se puede inyectar en otras (ej. el Controller)"
+@Injectable()
 export class VenuesService {
   constructor(
     @InjectRepository(Venue)
     private readonly venueRepository: Repository<Venue>,
+    @InjectRepository(VenueTable)
+    private readonly venueTableRepository: Repository<VenueTable>,
   ) {}
 
   async create(dto: CreateVenueDto): Promise<Venue> {
-    const venue = this.venueRepository.create(dto); // arma el objeto en memoria
-    return this.venueRepository.save(venue); // lo guarda de verdad en Postgres
+    const venue = this.venueRepository.create(dto);
+    return this.venueRepository.save(venue);
   }
 
   async findAll(): Promise<Venue[]> {
@@ -32,5 +31,29 @@ export class VenuesService {
       throw new NotFoundException(`No se encontró un venue con id ${id}`);
     }
     return venue;
+  }
+
+  // ------------------------------------------------------------
+  // Mesas (VenueTable) — aquí nace el qr_code_token de cada mesa
+  // ------------------------------------------------------------
+
+  async createTable(
+    venueId: string,
+    dto: CreateVenueTableDto,
+  ): Promise<VenueTable> {
+    // Confirma que el venue existe antes de crearle una mesa (Guard Clause).
+    await this.findOne(venueId);
+
+    const table = this.venueTableRepository.create({
+      venueId,
+      label: dto.label,
+      qrCodeToken: randomUUID(), // identificador único que se codifica en la imagen QR
+    });
+
+    return this.venueTableRepository.save(table);
+  }
+
+  async findTablesByVenue(venueId: string): Promise<VenueTable[]> {
+    return this.venueTableRepository.find({ where: { venueId } });
   }
 }
