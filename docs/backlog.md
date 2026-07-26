@@ -54,6 +54,6 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 
 ## Épica 7 — Infraestructura y calidad
 - [x] CI/CD con GitHub Actions (lint + test en cada PR)
-- [ ] Swagger/OpenAPI generado automáticamente
+- [x] Swagger/OpenAPI generado automáticamente
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
