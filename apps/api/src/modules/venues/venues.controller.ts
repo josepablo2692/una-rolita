@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param } from '@nestjs/common';
 import { VenuesService } from './venues.service';
 import { CreateVenueDto } from './dto/create-venue.dto';
 import { CreateVenueTableDto } from './dto/create-venue-table.dto';
+import { UpdateVenuePricingDto } from './dto/update-venue-pricing.dto';
 import { Venue } from './entities/venue.entity';
 import { VenueTable } from './entities/venue-table.entity';
 
@@ -24,7 +25,14 @@ export class VenuesController {
     return this.venuesService.findOne(id);
   }
 
-  // Mesas anidadas bajo un venue: /venues/:venueId/tables
+  @Patch(':id/pricing')
+  updatePricing(
+    @Param('id') id: string,
+    @Body() dto: UpdateVenuePricingDto,
+  ): Promise<Venue> {
+    return this.venuesService.updatePricing(id, dto);
+  }
+
   @Post(':venueId/tables')
   createTable(
     @Param('venueId') venueId: string,

@@ -5,6 +5,8 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
+//Aplicamos de nuevo DRY para proximos transformar datos numericos
+import { NumericColumnTransformer } from '../../../common/transformers/numeric.transformer';
 
 // Traduce la tabla `venues` de schema.sql a una clase de TypeScript.
 // TypeORM usa esta clase para leer/escribir filas de esa tabla sin que
@@ -50,6 +52,7 @@ export class Venue {
     precision: 10,
     scale: 2,
     default: 5.0,
+    transformer: new NumericColumnTransformer(),
   })
   queueJumpPrice!: number;
 
@@ -59,8 +62,19 @@ export class Venue {
     precision: 10,
     scale: 2,
     default: 3.0,
+    transformer: new NumericColumnTransformer(),
   })
   dedicationPrice!: number;
+
+  @Column({
+    name: 'combo_jump_dedication_price',
+    type: 'numeric',
+    precision: 10,
+    scale: 2,
+    default: 7.0,
+    transformer: new NumericColumnTransformer(),
+  })
+  comboJumpDedicationPrice!: number;
 
   @Column({ name: 'bank_account_info', type: 'jsonb', nullable: true })
   bankAccountInfo!: Record<string, unknown> | null;
