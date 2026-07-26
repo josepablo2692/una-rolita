@@ -17,6 +17,7 @@ CREATE TABLE venues (
     cooldown_hours  INT NOT NULL DEFAULT 3,          -- horas antes de repetir una canción
     queue_jump_price NUMERIC(10,2) NOT NULL DEFAULT 5.00,
     dedication_price NUMERIC(10,2) NOT NULL DEFAULT 3.00,
+    combo_jump_dedication_price NUMERIC(10,2) NOT NULL DEFAULT 7.00, -- precio fijo de paquete (marketing), independiente de la suma de los dos anteriores
     bank_account_info JSONB,                          -- datos para transferencias directas
     spotify_account_id UUID,                          -- cuenta Spotify Premium vinculada al local
     is_active       BOOLEAN NOT NULL DEFAULT true,
@@ -73,7 +74,7 @@ CREATE TABLE table_sessions (
 );
 
 -- ------------------------------------------------------------
--- Créditos y pagos (transferencia directa, estilo 1XBet)
+-- Créditos y pagos
 -- ------------------------------------------------------------
 
 CREATE TABLE credit_accounts (
@@ -145,13 +146,16 @@ CREATE TABLE queue_requests (
 
 CREATE INDEX idx_queue_requests_venue_status ON queue_requests (venue_id, status, position);
 
--- Control del límite "1 salto de cola pagado por hora"
+-- Control del límite de salto de cola pagado: por USUARIO (no por mesa),
+-- y basado en cuántas canciones han sonado desde el último salto de ese
+-- usuario (cooldown por actividad, no por reloj).
 CREATE TABLE queue_jumps (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id         UUID NOT NULL REFERENCES users(id),
-    venue_id        UUID NOT NULL REFERENCES venues(id),
-    queue_request_id UUID NOT NULL REFERENCES queue_requests(id),
-    jumped_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id                 UUID NOT NULL REFERENCES users(id),
+    venue_id                UUID NOT NULL REFERENCES venues(id),
+    queue_request_id        UUID NOT NULL REFERENCES queue_requests(id),
+    songs_played_snapshot   INT NOT NULL, -- cuántas canciones había reproducidas en el venue al momento del salto
+    jumped_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_queue_jumps_rate_limit ON queue_jumps (user_id, venue_id, jumped_at);
@@ -191,7 +195,7 @@ CREATE TABLE promotions (
 );
 
 -- ------------------------------------------------------------
--- Auditoría general (opcional pero recomendado desde ya)
+-- Auditoría general
 -- ------------------------------------------------------------
 
 CREATE TABLE audit_logs (

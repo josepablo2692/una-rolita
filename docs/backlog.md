@@ -7,14 +7,13 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Endpoint: crear sesión de mesa (invitado) a partir del QR
 - [ ] Endpoint: registro con teléfono + verificación OTP
 - [ ] Upgrade de sesión de mesa a usuario autenticado
-- [ ] JWT de acceso (15 min) + refresh token
+- [ ] JWT de acceso (10 horas) + refresh token
 - [ ] Guard de roles (`RolesGuard` + `@Roles()`)
 
 ## Épica 2 — Cola de pedidos
-- [ ] Modelo de datos de `queue_requests` (ya en `schema.sql`)
+- [x] Modelo de datos de `queue_requests` (ya en `schema.sql` no en el backend)
 - [ ] Lock distribuido con Redis (Redlock) al asignar posición
-- [ ] Regla de cooldown: no repetir canción antes de N horas por local
-- [ ] Salto de cola pagado, máximo 1 por hora por usuario
+- [x] Límite de salto de cola pagado: por USUARIO (no por mesa), con cooldown basado en número de canciones reproducidas desde el último salto (no por tiempo de reloj)
 - [ ] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [ ] Endpoint: cancelar un pedido en cola
 
@@ -23,6 +22,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
 - [ ] Acreditación atómica del saldo (Unit of Work)
+- [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
 - [ ] Regla: canción gratis por registro (con control antifraude)
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
@@ -53,7 +53,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Botón "abrir/cerrar cola" (para pausas en shows en vivo o strip-club)
 
 ## Épica 7 — Infraestructura y calidad
-- [ ] CI/CD con GitHub Actions (lint + test en cada PR)
+- [x] CI/CD con GitHub Actions (lint + test en cada PR)
 - [ ] Swagger/OpenAPI generado automáticamente
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
