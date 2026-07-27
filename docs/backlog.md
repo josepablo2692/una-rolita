@@ -3,19 +3,22 @@
 Este backlog está listo para copiarse como Issues en GitHub Projects. Cada historia se puede crear como un Issue individual, etiquetado con su épica.
 
 ## Épica 1 — Auth + QR (registro progresivo)
-- [ ] Generar QR único por mesa con token firmado
-- [ ] Endpoint: crear sesión de mesa (invitado) a partir del QR
+- [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
+- [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
 - [ ] Endpoint: registro con teléfono + verificación OTP
 - [ ] Upgrade de sesión de mesa a usuario autenticado
 - [ ] JWT de acceso (10 horas) + refresh token
 - [ ] Guard de roles (`RolesGuard` + `@Roles()`)
 
 ## Épica 2 — Cola de pedidos
-- [x] Modelo de datos de `queue_requests` (ya en `schema.sql` no en el backend)
-- [ ] Lock distribuido con Redis (Redlock) al asignar posición
+- [x] Modelo de datos de `queue_requests` (`schema.sql`)
+- [x] Entities + Service + Controller de `queue` (Song, VenueSongHistory, QueueRequest, QueueJump)
+- [x] Lock distribuido con Redis (SET NX simplificado) al asignar posición
 - [x] Límite de salto de cola pagado: por USUARIO (no por mesa), con cooldown basado en número de canciones reproducidas desde el último salto (no por tiempo de reloj)
+- [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
 - [ ] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [ ] Endpoint: cancelar un pedido en cola
+- [ ] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista auth real con roles
 
 ## Épica 3 — Créditos y pagos
 - [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
@@ -23,17 +26,17 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
 - [ ] Acreditación atómica del saldo (Unit of Work)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
-- [ ] Regla: canción gratis por registro (con control antifraude)
+- [ ] Regla: canción gratis por registro (con control antifraude, usando deviceFingerprint + teléfono verificado)
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
-- [ ] Campo `playback_mode` por local: `spotify_managed` o `dj_manual`
+- [x] Campo `playback_mode` por local: `spotify_managed` o `dj_manual`
 - [ ] **Modo Spotify**: OAuth de Spotify Premium para la cuenta del local
 - [ ] **Modo Spotify**: Adapter (`SpotifyAdapter` implementando `MusicProviderAdapter`)
 - [ ] **Modo Spotify**: agregar canción a la cola real de Spotify Connect
 - [ ] **Modo Spotify**: manejo de errores si el dispositivo del local se desconecta
-- [ ] **Modo DJ manual**: botón "marcar como reproducida" en el panel (sin integración externa)
+- [ ] **Modo DJ manual**: botón "marcar como reproducida" en el panel (ya existe el endpoint `PATCH /queue/:id/played`, falta la UI)
 - [ ] **Modo DJ manual**: el propio DJ lee la dedicatoria o decide usar el sintetizador
 - [ ] Sincronizar catálogo/búsqueda de canciones (solo aplica en modo Spotify)
 
@@ -53,7 +56,9 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Botón "abrir/cerrar cola" (para pausas en shows en vivo o strip-club)
 
 ## Épica 7 — Infraestructura y calidad
-- [x] CI/CD con GitHub Actions (lint + test en cada PR)
-- [x] Swagger/OpenAPI generado automáticamente
+- [x] CI/CD con GitHub Actions (lint + test en cada PR, con servicios Postgres y Redis temporales)
+- [x] Swagger/OpenAPI generado automáticamente (`/docs`)
+- [x] Transformer reutilizable para columnas NUMERIC (`NumericColumnTransformer`) — corrige bug de concatenación string/number
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
+- [ ] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)

@@ -15,6 +15,9 @@ import { AuthService } from './auth.service';
   ],
   controllers: [AuthController],
   providers: [AuthService],
-  exports: [AuthService],
+  exports: [
+    AuthService,
+    TypeOrmModule, // permite que otros módulos (queue, credits) inyecten Repository<User>
+  ],
 })
 export class AuthModule {}
