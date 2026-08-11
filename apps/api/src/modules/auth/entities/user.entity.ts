@@ -33,6 +33,9 @@ export class User {
   @Column({ name: 'is_phone_verified', default: false })
   isPhoneVerified!: boolean;
 
+  @Column({ name: 'is_email_verified', default: false })
+  isEmailVerified!: boolean;
+
   @Column({ name: 'free_song_used', default: false })
   freeSongUsed!: boolean;
 
