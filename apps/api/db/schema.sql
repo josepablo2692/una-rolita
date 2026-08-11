@@ -45,6 +45,7 @@ CREATE TABLE users (
     email           VARCHAR(150) UNIQUE,
     display_name    VARCHAR(80),
     is_phone_verified BOOLEAN NOT NULL DEFAULT false,
+    is_email_verified BOOLEAN NOT NULL DEFAULT false,
     free_song_used  BOOLEAN NOT NULL DEFAULT false,     -- controla la canción gratis por registro
     marketing_opt_in BOOLEAN NOT NULL DEFAULT false,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

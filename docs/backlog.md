@@ -6,9 +6,9 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
 - [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
-- [ ] Endpoint: registro con teléfono + verificación OTP
-- [ ] Upgrade de sesión de mesa a usuario autenticado
-- [ ] JWT de acceso (10 horas) + refresh token
+- [x] Endpoint: registro con verificación OTP por email (JWT_ACCESS_SECRET + Redis)
+- [x] Upgrade de sesión de mesa a usuario autenticado
+- [x] JWT de acceso (8 horas) + refresh token
 - [ ] Guard de roles (`RolesGuard` + `@Roles()`)
 
 ## Épica 2 — Cola de pedidos
@@ -36,6 +36,8 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Modelo de Tip (propina) independiente de credits — no comparte tabla ni lógica de gasto, aunque puede compartir PaymentMethod en el checkout
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
+- [ ] Modelo de Tip con campo de destino (venue por defecto, artista si "modo artista" está activo)
+- [ ] Regla: créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -73,4 +75,4 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Transformer reutilizable para columnas NUMERIC (`NumericColumnTransformer`) — corrige bug de concatenación string/number
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
-- [ ] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
+- [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
