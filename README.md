@@ -4,7 +4,7 @@ Rocola digital para sport-bars, gimnasios y clubes nocturnos. Los clientes piden
 
 ## Estado del proyecto
 
-Fase actual: **Discovery / Planificación** → iniciando **Sprint 1**.
+El progreso real y actualizado vive en docs/backlog.md — cada Épica tiene sus tareas marcadas como hechas ([x]) o pendientes ([ ]). Ese archivo es la fuente de verdad, no este README.
 
 ## Estructura del monorepo
 
@@ -57,6 +57,7 @@ pnpm --filter api run start:dev
 - Decisiones de arquitectura: [`docs/adr`](./docs/adr)
 - Documentación de la API (Swagger): disponible en `/api/docs` cuando el backend está corriendo localmente
 - Modelo de datos: [`apps/api/db/schema.sql`](./apps/api/db/schema.sql)
+- Si es tu primera vez con este proyecto (o cambiaste de computadora), sigue docs/SETUP.md paso a paso.
 
 ## Flujo de trabajo (Git)
 

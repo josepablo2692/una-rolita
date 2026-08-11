@@ -5,6 +5,8 @@ import { TableSession } from './entities/table-session.entity';
 import { VenuesModule } from '../venues/venues.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { AppJwtModule } from './jwt/jwt.module';
+import { OtpModule } from './otp/otp.module';
 
 @Module({
   imports: [
@@ -12,12 +14,15 @@ import { AuthService } from './auth.service';
     // Necesario porque TableSession/AuthService tienen una relación hacia
     // VenueTable, que vive en el módulo venues.
     VenuesModule,
+    AppJwtModule,
+    OtpModule,
   ],
   controllers: [AuthController],
   providers: [AuthService],
   exports: [
     AuthService,
-    TypeOrmModule, // permite que otros módulos (queue, credits) inyecten Repository<User>
+    TypeOrmModule,
+    AppJwtModule, // permite que otros módulos (queue, credits) inyecten Repository<User>
   ],
 })
 export class AuthModule {}

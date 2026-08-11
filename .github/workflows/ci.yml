@@ -38,6 +38,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://una_rolita:una_rolita_dev@localhost:5432/una_rolita
       REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-testing-secret-no-es-real
+      JWT_ACCESS_EXPIRES_IN: 8h
 
     steps:
       - name: Descargar código
