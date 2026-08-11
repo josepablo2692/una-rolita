@@ -3,41 +3,56 @@
 Este backlog está listo para copiarse como Issues en GitHub Projects. Cada historia se puede crear como un Issue individual, etiquetado con su épica.
 
 ## Épica 1 — Auth + QR (registro progresivo)
-- [ ] Generar QR único por mesa con token firmado
-- [ ] Endpoint: crear sesión de mesa (invitado) a partir del QR
-- [ ] Endpoint: registro con teléfono + verificación OTP
-- [ ] Upgrade de sesión de mesa a usuario autenticado
-- [ ] JWT de acceso (15 min) + refresh token
+
+- [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
+- [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
+- [x] Endpoint: registro con verificación OTP por email (JWT_ACCESS_SECRET + Redis)
+- [x] Upgrade de sesión de mesa a usuario autenticado
+- [x] JWT de acceso (8 horas) + refresh token
 - [ ] Guard de roles (`RolesGuard` + `@Roles()`)
 
 ## Épica 2 — Cola de pedidos
-- [ ] Modelo de datos de `queue_requests` (ya en `schema.sql`)
-- [ ] Lock distribuido con Redis (Redlock) al asignar posición
-- [ ] Regla de cooldown: no repetir canción antes de N horas por local
-- [ ] Salto de cola pagado, máximo 1 por hora por usuario
+
+- [x] Modelo de datos de `queue_requests` (`schema.sql`)
+- [x] Entities + Service + Controller de `queue` (Song, VenueSongHistory, QueueRequest, QueueJump)
+- [x] Lock distribuido con Redis (SET NX simplificado) al asignar posición
+- [x] Límite de salto de cola pagado: por USUARIO (no por mesa), con cooldown basado en número de canciones reproducidas desde el último salto (no por tiempo de reloj)
+- [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
 - [ ] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [ ] Endpoint: cancelar un pedido en cola
+- [ ] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista auth real con roles
 
 ## Épica 3 — Créditos y pagos
+
 - [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
 - [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
+  - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
 - [ ] Acreditación atómica del saldo (Unit of Work)
-- [ ] Regla: canción gratis por registro (con control antifraude)
+- [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
+- [ ] Regla: canción gratis por registro (con control antifraude, usando deviceFingerprint + teléfono verificado)
 - [ ] Expiración de créditos no usados (configurable)
+- [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz PaymentMethod, mismo patrón que OtpSender
+- [ ] Modelo de Tip (propina) independiente de credits — no comparte tabla ni lógica de gasto, aunque puede compartir PaymentMethod en el checkout
+- [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
+- [ ] Modelo de Tip con campo de destino (venue por defecto, artista si "modo artista" está activo)
+- [ ] Regla: créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
-- [ ] Campo `playback_mode` por local: `spotify_managed` o `dj_manual`
+
+- [x] Campo `playback_mode` por local: `spotify_managed` o `dj_manual`
 - [ ] **Modo Spotify**: OAuth de Spotify Premium para la cuenta del local
 - [ ] **Modo Spotify**: Adapter (`SpotifyAdapter` implementando `MusicProviderAdapter`)
 - [ ] **Modo Spotify**: agregar canción a la cola real de Spotify Connect
 - [ ] **Modo Spotify**: manejo de errores si el dispositivo del local se desconecta
-- [ ] **Modo DJ manual**: botón "marcar como reproducida" en el panel (sin integración externa)
+- [ ] **Modo DJ manual**: botón "marcar como reproducida" en el panel (ya existe el endpoint `PATCH /queue/:id/played`, falta la UI)
 - [ ] **Modo DJ manual**: el propio DJ lee la dedicatoria o decide usar el sintetizador
 - [ ] Sincronizar catálogo/búsqueda de canciones (solo aplica en modo Spotify)
+- [ ] Sincronizar playlist curada del venue/artista a tabla propia (VenueCuratedTrack) y validar contra ella ANTES de aceptar un pedido en queue.service.ts
 
 ## Épica 5 — Dedicatorias
+
 - [ ] Formulario de dedicatoria (mensaje, anónimo o no)
 - [ ] Filtro automático de palabras obscenas
 - [ ] Panel del DJ: aprobar/rechazar antes de que se lea
@@ -45,6 +60,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Regla anti-acoso: alerta si una mesa recibe muchas dedicatorias de la misma persona
 
 ## Épica 6 — Panel Admin / DJ
+
 - [ ] Dashboard con métricas (cola, créditos vendidos, mesas activas)
 - [ ] Vista de cola en vivo con acciones (play/skip)
 - [ ] Cola de moderación de dedicatorias
@@ -53,7 +69,10 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Botón "abrir/cerrar cola" (para pausas en shows en vivo o strip-club)
 
 ## Épica 7 — Infraestructura y calidad
-- [ ] CI/CD con GitHub Actions (lint + test en cada PR)
-- [ ] Swagger/OpenAPI generado automáticamente
+
+- [x] CI/CD con GitHub Actions (lint + test en cada PR, con servicios Postgres y Redis temporales)
+- [x] Swagger/OpenAPI generado automáticamente (`/docs`)
+- [x] Transformer reutilizable para columnas NUMERIC (`NumericColumnTransformer`) — corrige bug de concatenación string/number
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
+- [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)

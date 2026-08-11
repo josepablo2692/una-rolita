@@ -15,7 +15,7 @@ services:
       POSTGRES_PASSWORD: una_rolita_dev
       POSTGRES_DB: una_rolita
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./apps/api/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql

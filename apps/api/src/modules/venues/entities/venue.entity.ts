@@ -5,16 +5,14 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
-
-// Traduce la tabla `venues` de schema.sql a una clase de TypeScript.
-// TypeORM usa esta clase para leer/escribir filas de esa tabla sin que
-// tengamos que escribir SQL a mano en cada consulta.
+//Aplicamos DRY para poder tranformar los datos de PG a TypeORM
+import { NumericColumnTransformer } from '../../../common/transformers/numeric.transformer';
 
 export type VenueType = 'bar' | 'gym' | 'strip_club' | 'live_music';
 export type PlaylistMode = 'free' | 'curated';
 export type PlaybackMode = 'spotify_managed' | 'dj_manual';
 
-@Entity('venues') // nombre exacto de la tabla en Postgres
+@Entity('venues')
 export class Venue {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -50,6 +48,7 @@ export class Venue {
     precision: 10,
     scale: 2,
     default: 5.0,
+    transformer: new NumericColumnTransformer(),
   })
   queueJumpPrice!: number;
 
@@ -59,8 +58,19 @@ export class Venue {
     precision: 10,
     scale: 2,
     default: 3.0,
+    transformer: new NumericColumnTransformer(),
   })
   dedicationPrice!: number;
+
+  @Column({
+    name: 'combo_jump_dedication_price',
+    type: 'numeric',
+    precision: 10,
+    scale: 2,
+    default: 7.0,
+    transformer: new NumericColumnTransformer(),
+  })
+  comboJumpDedicationPrice!: number;
 
   @Column({ name: 'bank_account_info', type: 'jsonb', nullable: true })
   bankAccountInfo!: Record<string, unknown> | null;
