@@ -6,16 +6,11 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
 - [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
-
 - [x] Endpoint: registro con verificación OTP por email (Redis + Mailtrap, arquitectura vía OtpSender/OTP_SENDER)
 - [x] Upgrade de sesión de mesa a usuario autenticado (`POST /auth/upgrade`)
 - [x] JWT de acceso (8 horas) — JwtStrategy + JwtAuthGuard
-- [x] Refresh token (`JWT_REFRESH_SECRET`/`JWT_REFRESH_EXPIRES_IN` ya en `.env`, implementación pendiente) — deuda técnica
+- [x] Refresh token — revocación individual y total vía Redis (jti por sesión + set por usuario, TTL 7 días)
 - [ ] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
-- [ ] Guard de roles (`RolesGuard` + `@Roles()`) — en curso ahora
-- [x] Endpoint: registro con verificación OTP por email (JWT_ACCESS_SECRET + Redis)
-- [x] Upgrade de sesión de mesa a usuario autenticado
-- [x] JWT de acceso (8 horas) + refresh token
 - [ ] Guard de roles (`RolesGuard` + `@Roles()`)
 
 ## Épica 2 — Cola de pedidos
@@ -35,8 +30,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
 - [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
   - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
-  - [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía reverses_transaction_id
-- [ ] Refresh token revocable: jti guardado en Redis con TTL de 7 días, checable en cada refresh
+- [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía `reverses_transaction_id`
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
 - [ ] Acreditación atómica del saldo (Unit of Work)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
@@ -48,8 +42,6 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Toggle "modo artista" en configuración del venue — redirige propinas al artista contratado esa noche
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
-- [ ] Modelo de Tip con campo de destino (venue por defecto, artista si "modo artista" está activo)
-- [ ] Regla: créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -92,8 +84,4 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
-      <<<<<<< HEAD
 - [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
-      \=======
-
-> > > > > > > develop
