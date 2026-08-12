@@ -6,6 +6,13 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
 - [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
+
+- [x] Endpoint: registro con verificación OTP por email (Redis + Mailtrap, arquitectura vía OtpSender/OTP_SENDER)
+- [x] Upgrade de sesión de mesa a usuario autenticado (`POST /auth/upgrade`)
+- [x] JWT de acceso (8 horas) — JwtStrategy + JwtAuthGuard
+- [x] Refresh token (`JWT_REFRESH_SECRET`/`JWT_REFRESH_EXPIRES_IN` ya en `.env`, implementación pendiente) — deuda técnica
+- [ ] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
+- [ ] Guard de roles (`RolesGuard` + `@Roles()`) — en curso ahora
 - [x] Endpoint: registro con verificación OTP por email (JWT_ACCESS_SECRET + Redis)
 - [x] Upgrade de sesión de mesa a usuario autenticado
 - [x] JWT de acceso (8 horas) + refresh token
@@ -20,20 +27,25 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
 - [ ] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [ ] Endpoint: cancelar un pedido en cola
-- [ ] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista auth real con roles
+- [ ] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
+- [ ] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
 ## Épica 3 — Créditos y pagos
 
 - [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
 - [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
   - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
+  - [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía reverses_transaction_id
+- [ ] Refresh token revocable: jti guardado en Redis con TTL de 7 días, checable en cada refresh
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
 - [ ] Acreditación atómica del saldo (Unit of Work)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
-- [ ] Regla: canción gratis por registro (con control antifraude, usando deviceFingerprint + teléfono verificado)
+- [ ] Regla: canción gratis por registro (con control antifraude, usando deviceFingerprint + teléfono verificado) — ya existe `free_song_used` en `users`, falta la lógica de negocio
 - [ ] Expiración de créditos no usados (configurable)
-- [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz PaymentMethod, mismo patrón que OtpSender
-- [ ] Modelo de Tip (propina) independiente de credits — no comparte tabla ni lógica de gasto, aunque puede compartir PaymentMethod en el checkout
+- [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
+- [ ] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
+- [ ] Modelo de `Tip` (propina) independiente de `credits` — no comparte tabla ni lógica de gasto. Campo de destino: venue por defecto, artista si "modo artista" está activo
+- [ ] Toggle "modo artista" en configuración del venue — redirige propinas al artista contratado esa noche
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
 - [ ] Modelo de Tip con campo de destino (venue por defecto, artista si "modo artista" está activo)
@@ -49,7 +61,9 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] **Modo DJ manual**: botón "marcar como reproducida" en el panel (ya existe el endpoint `PATCH /queue/:id/played`, falta la UI)
 - [ ] **Modo DJ manual**: el propio DJ lee la dedicatoria o decide usar el sintetizador
 - [ ] Sincronizar catálogo/búsqueda de canciones (solo aplica en modo Spotify)
-- [ ] Sincronizar playlist curada del venue/artista a tabla propia (VenueCuratedTrack) y validar contra ella ANTES de aceptar un pedido en queue.service.ts
+- [ ] Biblioteca de playlists por artista — vive en su perfil, portátil entre venues (no atada a un solo local), el artista puede tener varias según el tipo de evento
+- [ ] Asignar cuál playlist del artista está activa en el venue/noche actual
+- [ ] Sincronizar la playlist activa a tabla propia (`VenueCuratedTrack` o similar) y validar contra ella ANTES de aceptar un pedido en `queue.service.ts` — el salto pagado nunca da acceso a canciones fuera de esta lista
 
 ## Épica 5 — Dedicatorias
 
@@ -67,12 +81,19 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Gestión de promociones propias del negocio
 - [ ] Configuración del local (modo de playlist, precios, cooldown)
 - [ ] Botón "abrir/cerrar cola" (para pausas en shows en vivo o strip-club)
+- [ ] Generar QR por cada mesa para que el admin los pueda imprimir
+- [ ] Indicador visual para el cliente: "Playlist curada por [Artista]" cuando `playlist_mode = curated`
 
 ## Épica 7 — Infraestructura y calidad
 
-- [x] CI/CD con GitHub Actions (lint + test en cada PR, con servicios Postgres y Redis temporales)
+- [x] CI/CD con GitHub Actions (lint + test en cada PR y en push a develop, con servicios Postgres y Redis temporales)
 - [x] Swagger/OpenAPI generado automáticamente (`/docs`)
 - [x] Transformer reutilizable para columnas NUMERIC (`NumericColumnTransformer`) — corrige bug de concatenación string/number
 - [ ] Pruebas de carga con k6 sobre cola y créditos
 - [ ] Monitoreo de errores (Sentry)
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
+      <<<<<<< HEAD
+- [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
+      \=======
+
+> > > > > > > develop

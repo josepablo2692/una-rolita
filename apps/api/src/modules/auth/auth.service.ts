@@ -13,6 +13,7 @@ import { User } from './entities/user.entity';
 import { OtpService } from './otp/otp.service';
 import { JwtPayload } from './jwt/jwt-payload.interface';
 import { UpgradeDto } from './dto/upgrade.dto';
+import { RefreshTokenService } from './jwt/refresh-token.service';
 
 const SESSION_DURATION_HOURS = 10;
 
@@ -27,13 +28,14 @@ export class AuthService {
     private readonly userRepository: Repository<User>,
     private readonly otpService: OtpService,
     private readonly jwtService: JwtService,
+    private readonly refreshTokenService: RefreshTokenService,
   ) {}
 
   // ...createGuestSession y findActiveSession se quedan exactamente igual...
 
   async upgradeGuestToUser(
     dto: UpgradeDto,
-  ): Promise<{ accessToken: string; user: User }> {
+  ): Promise<{ accessToken: string; refreshToken: string; user: User }> {
     // Guard Clause: sin código válido, no hay upgrade posible.
     const isValidCode = await this.otpService.verifyOtp(dto.email, dto.code);
     if (!isValidCode) {
@@ -55,8 +57,9 @@ export class AuthService {
       role: 'customer', // los roles de admin/DJ llegan en el paso 6 del roadmap
     };
     const accessToken = this.jwtService.sign(payload);
+    const refreshToken = await this.refreshTokenService.generate(user.id); // ← nuevo
 
-    return { accessToken, user };
+    return { accessToken, refreshToken, user };
   }
 
   private async findOrCreateUser(email: string): Promise<User> {
@@ -93,6 +96,32 @@ export class AuthService {
     });
 
     return this.tableSessionRepository.save(session);
+  }
+  // Pide un access token nuevo usando el refresh token. Rotación: el
+  // refresh token usado muere aquí mismo, se entrega uno nuevo — si
+  // alguien más lo intenta usar después, ya está revocado.
+  async refreshAccessToken(
+    refreshToken: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    const { userId, jti } = await this.refreshTokenService.verify(refreshToken);
+    await this.refreshTokenService.revoke(jti, userId);
+
+    const payload: JwtPayload = { sub: userId, role: 'customer' };
+    const accessToken = this.jwtService.sign(payload);
+    const newRefreshToken = await this.refreshTokenService.generate(userId);
+
+    return { accessToken, refreshToken: newRefreshToken };
+  }
+
+  // Logout normal: solo mata la sesión de ESTE dispositivo.
+  async logout(refreshToken: string): Promise<void> {
+    const { userId, jti } = await this.refreshTokenService.verify(refreshToken);
+    await this.refreshTokenService.revoke(jti, userId);
+  }
+
+  // El botón de emergencia: mata TODAS las sesiones del usuario.
+  async revokeAllSessions(userId: string): Promise<void> {
+    await this.refreshTokenService.revokeAllForUser(userId);
   }
 
   async findActiveSession(sessionId: string): Promise<TableSession> {
