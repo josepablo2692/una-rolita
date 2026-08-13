@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -14,6 +15,10 @@ import { OtpService } from './otp/otp.service';
 import { JwtPayload } from './jwt/jwt-payload.interface';
 import { UpgradeDto } from './dto/upgrade.dto';
 import { RefreshTokenService } from './jwt/refresh-token.service';
+import * as bcrypt from 'bcryptjs';
+import { Role } from './entities/role.entity';
+import { UserVenueRole } from './entities/user-venue-role.entity';
+import { LoginDto } from './dto/login.dto'; // lo creamos en el paso 4
 
 const SESSION_DURATION_HOURS = 10;
 
@@ -26,6 +31,10 @@ export class AuthService {
     private readonly venueTableRepository: Repository<VenueTable>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(UserVenueRole) // ← nuevo
+    private readonly userVenueRoleRepository: Repository<UserVenueRole>,
+    @InjectRepository(Role) // ← nuevo
+    private readonly roleRepository: Repository<Role>,
     private readonly otpService: OtpService,
     private readonly jwtService: JwtService,
     private readonly refreshTokenService: RefreshTokenService,
@@ -58,8 +67,9 @@ export class AuthService {
     };
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = await this.refreshTokenService.generate(user.id); // ← nuevo
+    const { passwordHash, ...safeUser } = user;
 
-    return { accessToken, refreshToken, user };
+    return { accessToken, refreshToken, user: safeUser as User };
   }
 
   private async findOrCreateUser(email: string): Promise<User> {
@@ -140,5 +150,64 @@ export class AuthService {
     }
 
     return session;
+  }
+
+  // Login de staff/admin/DJ — email + contraseña, distinto al OTP de
+  // clientes. Resuelve el rol REAL desde user_venue_roles, no lo
+  // asume — a diferencia de upgradeGuestToUser, que siempre pone
+  // 'customer'.
+  async loginStaff(
+    dto: LoginDto,
+  ): Promise<{ accessToken: string; refreshToken: string; user: User }> {
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
+
+    // Guard Clause: si no existe el usuario O no tiene password_hash
+    // (es un cliente, nunca se le asignó uno), rechaza igual — mismo
+    // mensaje para ambos casos, para no revelarle a un atacante cuál
+    // de las dos cosas falló.
+    if (!user || !user.passwordHash) {
+      throw new UnauthorizedException('Credenciales inválidas');
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      dto.password,
+      user.passwordHash,
+    );
+    if (!passwordMatches) {
+      throw new UnauthorizedException('Credenciales inválidas');
+    }
+
+    // Busca el rol real. Si por alguna razón no tiene ninguno asignado
+    // en user_venue_roles, no debería poder loguear como staff en
+    // absoluto — es una cuenta a medio configurar.
+    const assignment = await this.userVenueRoleRepository.findOne({
+      where: { userId: user.id },
+    });
+    if (!assignment) {
+      throw new UnauthorizedException(
+        'Usuario sin rol asignado en ningún negocio',
+      );
+    }
+
+    const role = await this.roleRepository.findOne({
+      where: { id: assignment.roleId },
+    });
+
+    const payload: JwtPayload = {
+      sub: user.id,
+      role: role!.name, // el ! es seguro aquí: roleId viene de una FK válida, el rol SIEMPRE existe
+      venueId: assignment.venueId,
+    };
+    const accessToken = this.jwtService.sign(payload);
+    const refreshToken = await this.refreshTokenService.generate(user.id);
+
+    // Nunca devolver el hash de la contraseña al cliente, aunque esté
+    // hasheado — reduce la superficie de ataque si la respuesta se
+    // intercepta o queda en un log.
+    const { passwordHash, ...safeUser } = user;
+
+    return { accessToken, refreshToken, user: safeUser as User };
   }
 }

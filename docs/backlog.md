@@ -10,8 +10,8 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Upgrade de sesión de mesa a usuario autenticado (`POST /auth/upgrade`)
 - [x] JWT de acceso (8 horas) — JwtStrategy + JwtAuthGuard
 - [x] Refresh token — revocación individual y total vía Redis (jti por sesión + set por usuario, TTL 7 días)
-- [ ] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
-- [ ] Guard de roles (`RolesGuard` + `@Roles()`)
+- [x] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
+- [x] Guard de roles (`RolesGuard` + `@Roles()`)
 
 ## Épica 2 — Cola de pedidos
 
@@ -34,7 +34,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
 - [ ] Acreditación atómica del saldo (Unit of Work)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
-- [ ] Regla: canción gratis por registro (con control antifraude, usando deviceFingerprint + teléfono verificado) — ya existe `free_song_used` en `users`, falta la lógica de negocio
+- [ ] Regla: canción gratis por registro (con control antifraude, usando verificacion de correo) — ya existe `free_song_used` en `users`, falta la lógica de negocio
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
 - [ ] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
@@ -75,6 +75,8 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Botón "abrir/cerrar cola" (para pausas en shows en vivo o strip-club)
 - [ ] Generar QR por cada mesa para que el admin los pueda imprimir
 - [ ] Indicador visual para el cliente: "Playlist curada por [Artista]" cuando `playlist_mode = curated`
+- [ ] Aclarar alcance de marketing_opt_in: separar consentimiento por venue vs. consentimiento de plataforma (Una Rolita) — posible campo adicional o tabla de consentimientos
+- [ ] Términos y condiciones: checkbox de aceptación en el registro (upgrade), con versión y fecha de aceptación guardada para auditoría legal
 
 ## Épica 7 — Infraestructura y calidad
 
@@ -85,3 +87,10 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Monitoreo de errores (Sentry)
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
 - [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
+
+## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
+
+- [ ] Análisis de géneros más pedidos por local — insumo para promociones dirigidas
+- [ ] KPIs de estacionalidad (día de la semana, hora pico) por local
+- [ ] Popularidad de canciones/artistas por local y agregado global
+- [ ] Desempeño histórico como base para sugerencias de promociones al admin (ej. "los jueves baja tu tráfico, considera una promo de créditos")

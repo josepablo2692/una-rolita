@@ -56,6 +56,12 @@ CREATE TABLE roles (
     id      SERIAL PRIMARY KEY,
     name    VARCHAR(30) NOT NULL UNIQUE  -- 'super_admin', 'venue_admin', 'dj', 'staff', 'customer' (staff = mesero/recepcion, puede cargar creditos)
 );
+-- Catálogo de valores esperados (se insertan una vez, ON CONFLICT DO NOTHING):
+-- 1 = super_admin  (acceso total a la plataforma, todos los venues)
+-- 2 = venue_admin  (dueño/administrador de un venue específico)
+-- 3 = dj           (artista/DJ, gestiona su cola y playlist)
+-- 4 = staff        (mesero/recepción, puede cargar créditos)
+-- 5 = customer     (cliente final, rol implícito, normalmente no pasa por login de staff)
 
 CREATE TABLE user_venue_roles (
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

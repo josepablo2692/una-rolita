@@ -15,6 +15,9 @@ import { UpgradeDto } from './dto/upgrade.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { User } from './entities/user.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { LoginDto } from './dto/login.dto';
+import { Roles } from './decorators/roles.decorator';
+import { RolesGuard } from './guards/roles.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -59,5 +62,20 @@ export class AuthController {
   ): Promise<{ message: string }> {
     await this.authService.revokeAllSessions(req.user.userId);
     return { message: 'Todas las sesiones fueron cerradas' };
+  }
+
+  //Login de administadores y usuarios del venue
+  @Post('login')
+  login(
+    @Body() dto: LoginDto,
+  ): Promise<{ accessToken: string; refreshToken: string; user: User }> {
+    return this.authService.loginStaff(dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('venue_admin', 'super_admin')
+  @Get('admin-only-test')
+  adminOnlyTest(): { message: string } {
+    return { message: 'Si ves esto, tu rol tiene permiso' };
   }
 }
