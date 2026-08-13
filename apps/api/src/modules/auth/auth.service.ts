@@ -67,6 +67,7 @@ export class AuthService {
     };
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = await this.refreshTokenService.generate(user.id); // ← nuevo
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { passwordHash, ...safeUser } = user;
 
     return { accessToken, refreshToken, user: safeUser as User };
@@ -206,6 +207,7 @@ export class AuthService {
     // Nunca devolver el hash de la contraseña al cliente, aunque esté
     // hasheado — reduce la superficie de ataque si la respuesta se
     // intercepta o queda en un log.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { passwordHash, ...safeUser } = user;
 
     return { accessToken, refreshToken, user: safeUser as User };
