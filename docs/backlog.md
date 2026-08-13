@@ -87,6 +87,16 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Monitoreo de errores (Sentry)
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
 - [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
+- [ ] Pruebas unitarias para OtpService, RefreshTokenService, AuthService (loginStaff, upgradeGuestToUser)
+- [ ] Pruebas e2e del flujo completo: scan → otp → upgrade → refresh → revoke
+- [ ] Pruebas de RolesGuard (con y sin rol permitido)
+- [ ] Estrategia de pruebas completa antes del 31/ago: unitarias + e2e + concurrencia + caja blanca + caja negra
+- [ ] Pruebas de concurrencia sobre el lock distribuido de Redis (queue.service.ts) — simular pedidos simultáneos reales
+- [ ] Pruebas de caja negra: casos de uso end-to-end sin mirar implementación (solo inputs/outputs esperados)
+- [ ] Pruebas de caja blanca: cobertura de ramas internas (branches) de la lógica de negocio crítica
+- [ ] Identificar "fallas fantasma" tempranas: código con condiciones de carrera o dependencias de timing no deterministas (candidatos: lock de Redis, expiración de OTP, rotación de refresh token)
+- [ ] Plan de despliegue a servidor real antes del 31/ago (definir proveedor: Railway, Render, VPS propio — pendiente de decisión)
+- [ ] Checklist de "listo para producción" por módulo (backend Y frontend cuando exista)
 
 ## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
 
