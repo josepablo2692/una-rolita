@@ -33,6 +33,14 @@ export class User {
   @Column({ name: 'is_phone_verified', default: false })
   isPhoneVerified!: boolean;
 
+  @Column({
+    name: 'password_hash',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  passwordHash!: string | null;
+
   @Column({ name: 'is_email_verified', default: false })
   isEmailVerified!: boolean;
 

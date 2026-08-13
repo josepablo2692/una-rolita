@@ -7,10 +7,12 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { AppJwtModule } from './jwt/jwt.module';
 import { OtpModule } from './otp/otp.module';
+import { Role } from './entities/role.entity';
+import { UserVenueRole } from './entities/user-venue-role.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, TableSession]),
+    TypeOrmModule.forFeature([User, TableSession, Role, UserVenueRole]),
     // Necesario porque TableSession/AuthService tienen una relación hacia
     // VenueTable, que vive en el módulo venues.
     VenuesModule,

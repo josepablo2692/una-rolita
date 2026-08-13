@@ -14,6 +14,7 @@ async function bootstrap() {
     .setTitle('Una Rolita API')
     .setDescription('API de la rocola digital para bares, gimnasios y clubes')
     .setVersion('0.1.0')
+    .addBearerAuth()
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
