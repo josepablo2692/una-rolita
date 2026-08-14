@@ -116,10 +116,16 @@ export class QueueService {
     }
   }
 
-  async findQueueByVenue(venueId: string): Promise<QueueRequest[]> {
+  async findQueueByVenue(
+    venueId: string,
+    limit = 20,
+    offset = 0,
+  ): Promise<QueueRequest[]> {
     return this.queueRequestRepository.find({
       where: { venueId, status: 'queued' as const },
       order: { position: 'ASC' },
+      take: limit,
+      skip: offset,
     });
   }
 

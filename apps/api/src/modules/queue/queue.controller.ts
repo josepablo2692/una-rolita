@@ -7,6 +7,7 @@ import {
   Param,
   Req,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import { QueueService } from './queue.service';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
@@ -36,8 +37,16 @@ export class QueueController {
   }
 
   @Get()
-  findQueue(@Param('venueId') venueId: string): Promise<QueueRequest[]> {
-    return this.queueService.findQueueByVenue(venueId);
+  findQueue(
+    @Param('venueId') venueId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ): Promise<QueueRequest[]> {
+    return this.queueService.findQueueByVenue(
+      venueId,
+      limit ? parseInt(limit, 10) : 20,
+      offset ? parseInt(offset, 10) : 0,
+    );
   }
 
   @Patch(':requestId/played')
