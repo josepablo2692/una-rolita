@@ -22,7 +22,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Lock distribuido con Redis (SET NX simplificado) al asignar posición
 - [x] Límite de salto de cola pagado: por USUARIO (no por mesa), con cooldown basado en número de canciones reproducidas desde el último salto (no por tiempo de reloj)
 - [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
-- [ ] WebSocket: actualización en vivo de la cola para pantalla del DJ
+- [x] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [ ] Endpoint: cancelar un pedido en cola
 - [ ] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
 - [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
@@ -100,6 +100,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Identificar "fallas fantasma" tempranas: código con condiciones de carrera o dependencias de timing no deterministas (candidatos: lock de Redis, expiración de OTP, rotación de refresh token)
 - [ ] Plan de despliegue a servidor real antes del 31/ago (definir proveedor: Railway, Render, VPS propio — pendiente de decisión)
 - [ ] Checklist de "listo para producción" por módulo (backend Y frontend cuando exista)
+- [ ] Restringir CORS de QueueGateway (cors: { origin: '*' }) al dominio real del frontend antes de producción — actualmente abierto a cualquier origen, solo válido en desarrollo
 
 ## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
 

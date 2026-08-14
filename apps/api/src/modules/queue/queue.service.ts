@@ -15,6 +15,7 @@ import { QueueRequest } from './entities/queue-request.entity';
 import { QueueJump } from './entities/queue-jump.entity';
 import { VenuesService } from '../venues/venues.service';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
+import { QueueGateway } from './queue.gateway';
 
 // Cuántas canciones deben sonar antes de que el MISMO usuario pueda
 // volver a pagar por otro salto de cola (cooldown por actividad,
@@ -39,6 +40,7 @@ export class QueueService {
     @InjectRepository(QueueJump)
     private readonly queueJumpRepository: Repository<QueueJump>,
     private readonly venuesService: VenuesService,
+    private readonly queueGateway: QueueGateway, // <- nuevo
   ) {}
 
   // ==============================================================
@@ -103,7 +105,8 @@ export class QueueService {
       if (dto.isPaidJump) {
         await this.registerJump(userId, venueId, saved.id);
       }
-
+      const updatedQueue = await this.findQueueByVenue(venueId);
+      this.queueGateway.notifyQueueUpdated(venueId, updatedQueue); // <- Notifica el nuevo pedido
       return saved;
     } finally {
       // Libera el lock SIEMPRE, incluso si algo falló arriba — para
@@ -140,7 +143,8 @@ export class QueueService {
       songId: request.songId,
     });
     await this.historyRepository.save(history);
-
+    const updatedQueue = await this.findQueueByVenue(request.venueId);
+    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue); // <- notifica que ya sono
     return request;
   }
 
