@@ -25,7 +25,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [x] Endpoint: cancelar un pedido en cola
 - [x] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
-- [ ] Paginación en GET /venues/:venueId/queue — limitar resultados cuando la cola crezca mucho (ej. ?limit=20&offset=0)
+- [x] Paginación en GET /venues/:venueId/queue — limitar resultados cuando la cola crezca mucho (ej. ?limit=20&offset=0)
 - [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
 ## Épica 3 — Créditos y pagos
@@ -83,6 +83,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Aclarar alcance de marketing_opt_in: separar consentimiento por venue vs. consentimiento de plataforma (Una Rolita) — posible campo adicional o tabla de consentimientos
 - [ ] Términos y condiciones: checkbox de aceptación en el registro (upgrade), con versión y fecha de aceptación guardada para auditoría legal
 - [ ] Diseño visual de la pantalla de cola en vivo (paginación/scroll, orden claro, indicadores de saltos pagados)
+- [ ] Vista de cola: scroll infinito (no paginación con números), estilo Spotify — reusa GET /queue?limit=&offset= ya construido
 
 ## Épica 7 — Infraestructura y calidad
 
