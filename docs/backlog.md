@@ -23,8 +23,9 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Límite de salto de cola pagado: por USUARIO (no por mesa), con cooldown basado en número de canciones reproducidas desde el último salto (no por tiempo de reloj)
 - [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
 - [x] WebSocket: actualización en vivo de la cola para pantalla del DJ
-- [ ] Endpoint: cancelar un pedido en cola
-- [ ] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
+- [x] Endpoint: cancelar un pedido en cola
+- [x] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
+- [ ] Paginación en GET /venues/:venueId/queue — limitar resultados cuando la cola crezca mucho (ej. ?limit=20&offset=0)
 - [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
 ## Épica 3 — Créditos y pagos
@@ -45,6 +46,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
 - [ ] Lógica de freeSongUsed en queue.service.createRequest — leer/voltear el booleano ANTES de cobrar, con lock para evitar doble uso concurrente (depende de Épica 3, sistema de créditos)
+- [ ] Regla de reembolso en cancelRequest: si isPaidJump=true, el monto del salto NO se reembolsa (ya se recibió el beneficio de posición); solo se reembolsa si nunca hubo salto pagado
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -80,6 +82,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Indicador visual para el cliente: "Playlist curada por [Artista]" cuando `playlist_mode = curated`
 - [ ] Aclarar alcance de marketing_opt_in: separar consentimiento por venue vs. consentimiento de plataforma (Una Rolita) — posible campo adicional o tabla de consentimientos
 - [ ] Términos y condiciones: checkbox de aceptación en el registro (upgrade), con versión y fecha de aceptación guardada para auditoría legal
+- [ ] Diseño visual de la pantalla de cola en vivo (paginación/scroll, orden claro, indicadores de saltos pagados)
 
 ## Épica 7 — Infraestructura y calidad
 
@@ -101,6 +104,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Plan de despliegue a servidor real antes del 31/ago (definir proveedor: Railway, Render, VPS propio — pendiente de decisión)
 - [ ] Checklist de "listo para producción" por módulo (backend Y frontend cuando exista)
 - [ ] Restringir CORS de QueueGateway (cors: { origin: '*' }) al dominio real del frontend antes de producción — actualmente abierto a cualquier origen, solo válido en desarrollo
+- [ ] Redis Adapter para Socket.io — necesario SOLO cuando se corra más de una instancia del servidor (escalamiento horizontal)
 
 ## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
 
@@ -109,4 +113,4 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Popularidad de canciones/artistas por local y agregado global
 - [ ] Desempeño histórico como base para sugerencias de promociones al admin (ej. "los jueves baja tu tráfico, considera una promo de créditos")
 - [ ] Internacionalización (i18n): soporte para español e inglés en el frontend/respuestas al usuario, inglés como idioma base del sistema
-- [ ] Definir mecanismo (ej. nestjs-i18n, o diccionario de strings por locale) — decisión pendiente, no es de esta fasegit
+- [ ] Definir mecanismo (ej. nestjs-i18n, o diccionario de strings por locale) — decisión pendiente, no es de esta fase,

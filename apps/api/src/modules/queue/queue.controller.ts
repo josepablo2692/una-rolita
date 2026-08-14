@@ -19,7 +19,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 @Controller('venues/:venueId/queue')
 export class QueueController {
   constructor(private readonly queueService: QueueService) {}
-
+  //Creala fila
   @UseGuards(JwtAuthGuard)
   @Post()
   create(
@@ -43,5 +43,20 @@ export class QueueController {
   @Patch(':requestId/played')
   markAsPlayed(@Param('requestId') requestId: string): Promise<QueueRequest> {
     return this.queueService.markAsPlayed(requestId);
+  }
+  //cancelar pedito
+  @UseGuards(JwtAuthGuard)
+  @Patch(':requestId/cancel')
+  cancel(
+    @Param('requestId') requestId: string,
+    @Req() req: Request & { user: { userId: string } },
+  ): Promise<QueueRequest> {
+    return this.queueService.cancelRequest(requestId, req.user.userId);
+  }
+  // queue.controller.ts
+  @UseGuards(JwtAuthGuard)
+  @Patch(':requestId/skip')
+  skip(@Param('requestId') requestId: string): Promise<QueueRequest> {
+    return this.queueService.skipRequest(requestId);
   }
 }
