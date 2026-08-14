@@ -25,7 +25,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [ ] Endpoint: cancelar un pedido en cola
 - [ ] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
-- [ ] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
+- [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
 ## Épica 3 — Créditos y pagos
 
