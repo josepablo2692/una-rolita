@@ -12,6 +12,8 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Refresh token — revocación individual y total vía Redis (jti por sesión + set por usuario, TTL 7 días)
 - [x] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
 - [x] Guard de roles (`RolesGuard` + `@Roles()`)
+- [ ] OAuth con Google (y opcionalmente Facebook) como alternativa de bajo-fricción al OTP por correo — PRIORIDAD antes de iniciar Épica 3
+- [ ] deviceFingerprint: capturar en frontend (silencioso) y usarlo para control antifraude de la canción gratis
 
 ## Épica 2 — Cola de pedidos
 
@@ -42,6 +44,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Toggle "modo artista" en configuración del venue — redirige propinas al artista contratado esa noche
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
+- [ ] Lógica de freeSongUsed en queue.service.createRequest — leer/voltear el booleano ANTES de cobrar, con lock para evitar doble uso concurrente (depende de Épica 3, sistema de créditos)
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -104,3 +107,5 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] KPIs de estacionalidad (día de la semana, hora pico) por local
 - [ ] Popularidad de canciones/artistas por local y agregado global
 - [ ] Desempeño histórico como base para sugerencias de promociones al admin (ej. "los jueves baja tu tráfico, considera una promo de créditos")
+- [ ] Internacionalización (i18n): soporte para español e inglés en el frontend/respuestas al usuario, inglés como idioma base del sistema
+- [ ] Definir mecanismo (ej. nestjs-i18n, o diccionario de strings por locale) — decisión pendiente, no es de esta fasegit

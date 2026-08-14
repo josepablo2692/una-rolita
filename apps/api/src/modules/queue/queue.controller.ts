@@ -1,7 +1,18 @@
-import { Controller, Post, Get, Patch, Body, Param } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Patch,
+  Body,
+  Param,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { QueueService } from './queue.service';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
 import { QueueRequest } from './entities/queue-request.entity';
+import { Request } from 'express';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 // Rutas anidadas bajo /venues/:venueId/queue — la cola siempre pertenece
 // a un venue específico, nunca existe "suelta".
@@ -9,17 +20,17 @@ import { QueueRequest } from './entities/queue-request.entity';
 export class QueueController {
   constructor(private readonly queueService: QueueService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Post()
   create(
     @Param('venueId') venueId: string,
-    @Body() dto: CreateQueueRequestDto & { tableId: string; userId: string },
+    @Body() dto: CreateQueueRequestDto & { tableId: string },
+    @Req() req: Request & { user: { userId: string } },
   ): Promise<QueueRequest> {
-    // tableId y userId vienen en el body por ahora (en un paso futuro,
-    // userId saldrá del JWT vía Guard, no del body — anotado en backlog).
     return this.queueService.createRequest(
       venueId,
       dto.tableId,
-      dto.userId,
+      req.user.userId, // ← viene del JWT verificado, ya no del body
       dto,
     );
   }
