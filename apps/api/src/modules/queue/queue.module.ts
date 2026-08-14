@@ -9,6 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../../redis/redis.module';
 import { QueueController } from './queue.controller';
 import { QueueService } from './queue.service';
+import { QueueGateway } from './queue.gateway';
 
 @Module({
   imports: [
@@ -22,6 +23,6 @@ import { QueueService } from './queue.service';
     RedisModule,
   ],
   controllers: [QueueController],
-  providers: [QueueService],
+  providers: [QueueService, QueueGateway],
 })
 export class QueueModule {}
