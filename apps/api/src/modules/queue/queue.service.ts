@@ -3,6 +3,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThan, Repository } from 'typeorm';
@@ -145,6 +146,65 @@ export class QueueService {
     await this.historyRepository.save(history);
     const updatedQueue = await this.findQueueByVenue(request.venueId);
     this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue); // <- notifica que ya sono
+    return request;
+  }
+
+  // Cancela un pedido — solo el usuario dueño puede hacerlo. No borra
+  // la fila (igual que markAsPlayed), solo cambia su estado, para
+  // conservar el historial completo.
+  async cancelRequest(id: string, userId: string): Promise<QueueRequest> {
+    const request = await this.queueRequestRepository.findOne({
+      where: { id },
+    });
+    if (!request) {
+      throw new NotFoundException(`No se encontró el pedido con id ${id}`);
+    }
+
+    if (request.userId !== userId) {
+      throw new ForbiddenException(
+        'No puedes cancelar el pedido de otra persona',
+      );
+    }
+
+    if (request.status !== 'queued') {
+      throw new BadRequestException(
+        `No se puede cancelar un pedido en estado "${request.status}"`,
+      );
+    }
+
+    request.status = 'cancelled';
+    await this.queueRequestRepository.save(request);
+
+    const updatedQueue = await this.findQueueByVenue(request.venueId);
+    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue);
+
+    return request;
+  }
+  // queue.service.ts — agrega junto a cancelRequest
+  async skipRequest(id: string): Promise<QueueRequest> {
+    const request = await this.queueRequestRepository.findOne({
+      where: { id },
+    });
+    if (!request) {
+      throw new NotFoundException(`No se encontró el pedido con id ${id}`);
+    }
+    if (request.status !== 'queued') {
+      throw new BadRequestException(
+        `No se puede saltar un pedido en estado "${request.status}"`,
+      );
+    }
+
+    request.status = 'skipped';
+    await this.queueRequestRepository.save(request);
+
+    // TODO Épica 3: si request.isPaidJump, el monto del salto NO se
+    // reembolsa (ya se recibió el beneficio de posición). Si no era
+    // salto pagado, reembolsar el Q1 de la canción cuando exista
+    // el sistema de créditos.
+
+    const updatedQueue = await this.findQueueByVenue(request.venueId);
+    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue);
+
     return request;
   }
 
