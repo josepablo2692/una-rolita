@@ -97,7 +97,10 @@ export class AuthService {
     return this.userRepository.save(user);
   }
 
-  async createGuestSession(qrCodeToken: string): Promise<TableSession> {
+  async createGuestSession(
+    qrCodeToken: string,
+    deviceFingerprint?: string,
+  ): Promise<TableSession> {
     const table = await this.venueTableRepository.findOne({
       where: { qrCodeToken, isActive: true },
     });
@@ -112,6 +115,7 @@ export class AuthService {
     const session = this.tableSessionRepository.create({
       tableId: table.id,
       userId: null,
+      deviceFingerprint: deviceFingerprint ?? null,
       expiresAt,
     });
 
