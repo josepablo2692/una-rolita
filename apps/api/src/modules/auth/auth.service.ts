@@ -73,10 +73,18 @@ export class AuthService {
     return { accessToken, refreshToken, user: safeUser as User };
   }
 
-  private async findOrCreateUser(email: string): Promise<User> {
+  private async findOrCreateUser(
+    email: string,
+    displayName?: string,
+  ): Promise<User> {
     const existing = await this.userRepository.findOne({ where: { email } });
     if (existing) {
       existing.isEmailVerified = true;
+      // Solo actualiza el nombre si no tenía uno antes — no queremos
+      // sobrescribir un nombre que el usuario ya haya puesto a mano.
+      if (displayName && !existing.displayName) {
+        existing.displayName = displayName;
+      }
       return this.userRepository.save(existing);
     }
 
@@ -84,6 +92,7 @@ export class AuthService {
       email,
       isEmailVerified: true,
       phoneNumber: null,
+      displayName: displayName ?? null,
     });
     return this.userRepository.save(user);
   }
@@ -207,6 +216,28 @@ export class AuthService {
     // Nunca devolver el hash de la contraseña al cliente, aunque esté
     // hasheado — reduce la superficie de ataque si la respuesta se
     // intercepta o queda en un log.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { passwordHash, ...safeUser } = user;
+
+    return { accessToken, refreshToken, user: safeUser as User };
+  }
+  // Login vía Google — reusa findOrCreateUser (mismo método que
+  // upgradeGuestToUser), porque el resultado final es el mismo: un
+  // User real con email verificado. Solo cambia CÓMO se verificó
+  // la identidad (Google, en vez de un código OTP).
+  async loginWithGoogle(
+    email: string,
+    displayName: string,
+  ): Promise<{ accessToken: string; refreshToken: string; user: User }> {
+    const user = await this.findOrCreateUser(email, displayName);
+
+    const payload: JwtPayload = {
+      sub: user.id,
+      role: 'customer', // igual que OTP: Google es para clientes, no reemplaza el login de staff
+    };
+    const accessToken = this.jwtService.sign(payload);
+    const refreshToken = await this.refreshTokenService.generate(user.id);
+
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { passwordHash, ...safeUser } = user;
 

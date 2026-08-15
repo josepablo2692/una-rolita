@@ -12,7 +12,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Refresh token — revocación individual y total vía Redis (jti por sesión + set por usuario, TTL 7 días)
 - [x] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
 - [x] Guard de roles (`RolesGuard` + `@Roles()`)
-- [ ] OAuth con Google (y opcionalmente Facebook) como alternativa de bajo-fricción al OTP por correo — PRIORIDAD antes de iniciar Épica 3
+- [x] OAuth con Google (y opcionalmente Facebook) como alternativa de bajo-fricción al OTP por correo — PRIORIDAD antes de iniciar Épica 3
 - [ ] deviceFingerprint: capturar en frontend (silencioso) y usarlo para control antifraude de la canción gratis
 
 ## Épica 2 — Cola de pedidos
@@ -84,6 +84,11 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Términos y condiciones: checkbox de aceptación en el registro (upgrade), con versión y fecha de aceptación guardada para auditoría legal
 - [ ] Diseño visual de la pantalla de cola en vivo (paginación/scroll, orden claro, indicadores de saltos pagados)
 - [ ] Vista de cola: scroll infinito (no paginación con números), estilo Spotify — reusa GET /queue?limit=&offset= ya construido
+- [ ] Endpoint PATCH /users/me — el usuario puede editar su propio displayName, marketingOptIn, etc.
+- [ ] manifest.json con branding de Una Rolita (colores, ícono, nombre)
+- [ ] Service worker básico para instalabilidad
+- [ ] Prompt activo de "instalar app" (evento beforeinstallprompt), no depender de que el usuario lo encuentre solo
+- [ ] Auditar cada flujo principal contra la regla de 3 clics antes de darlo por terminado
 
 ## Épica 7 — Infraestructura y calidad
 
@@ -114,4 +119,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Popularidad de canciones/artistas por local y agregado global
 - [ ] Desempeño histórico como base para sugerencias de promociones al admin (ej. "los jueves baja tu tráfico, considera una promo de créditos")
 - [ ] Internacionalización (i18n): soporte para español e inglés en el frontend/respuestas al usuario, inglés como idioma base del sistema
-- [ ] Definir mecanismo (ej. nestjs-i18n, o diccionario de strings por locale) — decisión pendiente, no es de esta fase,
+- [ ] Definir mecanismo (ej. nestjs-i18n, o diccionario de strings por locale) — decisión pendiente, no es de esta fase.
+- [ ] Credenciales OAuth adicionales (Android/iOS) cuando exista app móvil nativa — backend no cambia
+- [ ] Botón opcional "Síguenos en WhatsApp" (link wa.me) al pedir número de teléfono — incentivo, NUNCA obligatorio (contradice regla de 3 clics)
+- [ ] Verificar reglas reales de visibilidad de Estados de WhatsApp antes de diseñar la estrategia (¿requiere guardado mutuo?)

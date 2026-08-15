@@ -7,6 +7,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './jwt.strategy';
 import { RefreshTokenService } from './refresh-token.service';
 import { RedisModule } from '../../../redis/redis.module';
+import { GoogleStrategy } from '../google/google.strategy';
 
 // El tipo real que espera jsonwebtoken ('15m', '7d', o segundos como number).
 // Lo derivamos de @nestjs/jwt en vez de importar 'ms', que no es una
@@ -29,7 +30,7 @@ type ExpiresIn = NonNullable<JwtModuleOptions['signOptions']>['expiresIn'];
       }),
     }),
   ],
-  providers: [JwtStrategy, RefreshTokenService],
+  providers: [JwtStrategy, RefreshTokenService, GoogleStrategy],
   exports: [JwtModule, PassportModule, RefreshTokenService],
 })
 export class AppJwtModule {}
