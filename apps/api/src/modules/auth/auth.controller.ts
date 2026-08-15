@@ -18,6 +18,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { LoginDto } from './dto/login.dto';
 import { Roles } from './decorators/roles.decorator';
 import { RolesGuard } from './guards/roles.guard';
+import { AuthGuard } from '@nestjs/passport';
 
 @Controller('auth')
 export class AuthController {
@@ -70,6 +71,26 @@ export class AuthController {
     @Body() dto: LoginDto,
   ): Promise<{ accessToken: string; refreshToken: string; user: User }> {
     return this.authService.loginStaff(dto);
+  }
+  // Redirige al usuario a la pantalla de login de Google. No hace
+  // nada en el cuerpo — AuthGuard('google') intercepta ANTES de que
+  // este código corra, y maneja la redirección solo.
+  @Get('google')
+  @UseGuards(AuthGuard('google'))
+  googleAuth(): void {}
+
+  // Google redirige aquí después de que el usuario acepta. Para
+  // cuando lleguemos: aquí conectamos con AuthService para
+  // crear/encontrar el User y firmar el JWT, igual que en upgrade.
+  @Get('google/callback')
+  @UseGuards(AuthGuard('google'))
+  googleCallback(
+    @Req() req: Request & { user: { email: string; displayName?: string } },
+  ): Promise<{ accessToken: string; refreshToken: string; user: User }> {
+    return this.authService.loginWithGoogle(
+      req.user.email,
+      req.user.displayName ?? '',
+    );
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
