@@ -26,7 +26,8 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
 - [x] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [x] Endpoint: cancelar un pedido en cola
-- [x] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
+- [x] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`)
+      — dispara devolución automática y total del crédito, sin justificación manual
 - [x] Paginación en GET /venues/:venueId/queue — limitar resultados cuando la cola crezca mucho (ej. ?limit=20&offset=0)
 - [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
@@ -48,7 +49,13 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
 - [ ] Lógica de freeSongUsed en queue.service.createRequest — leer/voltear el booleano ANTES de cobrar, con lock para evitar doble uso concurrente (depende de Épica 3, sistema de créditos)
-- [ ] Regla de reembolso en cancelRequest: si isPaidJump=true, el monto del salto NO se reembolsa (ya se recibió el beneficio de posición); solo se reembolsa si nunca hubo salto pagado
+- [ ] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
+      no según qué se cobró.
+  - Artista/DJ salta el pedido → el servicio nunca se entregó por decisión
+    del local → reembolso TOTAL (canción + salto + dedicatoria)
+  - Cliente cancela → decisión propia, ya se benefició de la posición
+    ganada → NO se reembolsa el salto (`is_paid_jump`); solo se reembolsa
+    el costo base de la canción si nunca hubo salto pagado
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -125,3 +132,34 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Credenciales OAuth adicionales (Android/iOS) cuando exista app móvil nativa — backend no cambia
 - [ ] Botón opcional "Síguenos en WhatsApp" (link wa.me) al pedir número de teléfono — incentivo, NUNCA obligatorio (contradice regla de 3 clics)
 - [ ] Verificar reglas reales de visibilidad de Estados de WhatsApp antes de diseñar la estrategia (¿requiere guardado mutuo?)
+
+## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor)
+
+Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
+dinero real a `venue.queueJumpPrice`, a `skipRequest` y a las posiciones de
+cola. Los tres tienen vulnerabilidades explotables hoy. Construir el sistema
+de cobros encima sería cimentar sobre arena.
+
+- [ ] P0-1: `ValidationPipe` global con `whitelist` — hoy NO existe, así que
+      todos los decoradores de class-validator del proyecto son inertes y hay
+      mass assignment abierto en `venueRepository.create(dto)`
+- [ ] P0-2: `VenuesController` sin ningún guard — `PATCH /venues/:id/pricing`
+      y `POST /venues/:id/tables` son públicos; expone precios y `qrCodeToken`
+- [ ] P0-3: `PATCH /queue/:id/played` sin guard; `skip` con JWT pero sin rol
+      (permitiría forzar reembolsos en Épica 3); `venueId` de la ruta ignorado
+      en played/cancel/skip (IDOR); `tableId` nunca validado ni verificado
+      contra el venue
+- [ ] P0-4: release del lock de Redis no atómico (GET+DEL, ventana de carrera);
+      `calculateJumpPosition` asigna posiciones duplicadas y no empuja al resto
+      — se cobra por una posición que no se garantiza
+
+### Diferido a Fase 3 (post Épica 3)
+
+- [ ] Rate limiting (`@nestjs/throttler`) — OTP y login sin techo
+- [ ] Exception filter global — hoy se filtran errores crudos de TypeORM
+- [ ] Interceptor de logging con ID de correlación (necesario para auditoría
+      de cobros)
+- [ ] `helmet` y CORS explícito; el gateway tiene `cors: { origin: '*' }`
+- [ ] `@ApiProperty` en todos los DTOs — Swagger existe pero no documenta
+      los cuerpos
+- [ ] `@Roles()` está aplicado en 1 de ~15 endpoints
