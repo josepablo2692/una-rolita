@@ -26,7 +26,10 @@ export class AuthController {
 
   @Post('scan')
   scan(@Body() dto: ScanQrDto): Promise<TableSession> {
-    return this.authService.createGuestSession(dto.qrCodeToken);
+    return this.authService.createGuestSession(
+      dto.qrCodeToken,
+      dto.deviceFingerprint,
+    );
   }
 
   @Get('session/:id')

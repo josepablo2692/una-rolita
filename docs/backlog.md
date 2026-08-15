@@ -13,7 +13,9 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
 - [x] Guard de roles (`RolesGuard` + `@Roles()`)
 - [x] OAuth con Google (y opcionalmente Facebook) como alternativa de bajo-fricción al OTP por correo — PRIORIDAD antes de iniciar Épica 3
-- [ ] deviceFingerprint: capturar en frontend (silencioso) y usarlo para control antifraude de la canción gratis
+- [x] deviceFingerprint: columna + DTO + Service listos para recibirlo (backend)
+- [ ] deviceFingerprint: generación real en frontend (fingerprintjs o similar) — pendiente hasta que exista frontend
+- [ ] OAuth con Facebook — APLAZADO: bloqueado en configuración de Facebook for Developers (no en código). Falta: crear la app, agregar producto "Facebook Login", configurar callback URL, y copiar App ID/Secret al .env. Una vez con las credenciales, el código es copia del patrón de GoogleStrategy (mismo archivo, misma estructura) — no debería tomar más de 15-20 min una vez resuelto el lado de Facebook.
 
 ## Épica 2 — Cola de pedidos
 
