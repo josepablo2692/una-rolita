@@ -25,13 +25,13 @@ export class QueueController {
   @Post()
   create(
     @Param('venueId') venueId: string,
-    @Body() dto: CreateQueueRequestDto & { tableId: string },
+    @Body() dto: CreateQueueRequestDto, // ← ya no lleva el & { tableId: string }
     @Req() req: Request & { user: { userId: string } },
   ): Promise<QueueRequest> {
     return this.queueService.createRequest(
       venueId,
-      dto.tableId,
-      req.user.userId, // ← viene del JWT verificado, ya no del body
+      dto.tableId, // ← ahora sí viene validado del DTO
+      req.user.userId,
       dto,
     );
   }

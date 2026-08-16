@@ -120,6 +120,10 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Checklist de "listo para producción" por módulo (backend Y frontend cuando exista)
 - [ ] Restringir CORS de QueueGateway (cors: { origin: '*' }) al dominio real del frontend antes de producción — actualmente abierto a cualquier origen, solo válido en desarrollo
 - [ ] Redis Adapter para Socket.io — necesario SOLO cuando se corra más de una instancia del servidor (escalamiento horizontal)
+- [ ] Migraciones de TypeORM antes del segundo despliegue a producción.
+      `schema.sql` queda como línea base (migración 0); de ahí en adelante todo
+      cambio de esquema es una migración versionada. Sin esto, el primer cambio
+      de columna en producción es manual y sin vuelta atrás.
 
 ## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
 
@@ -162,4 +166,4 @@ de cobros encima sería cimentar sobre arena.
 - [ ] `helmet` y CORS explícito; el gateway tiene `cors: { origin: '*' }`
 - [ ] `@ApiProperty` en todos los DTOs — Swagger existe pero no documenta
       los cuerpos
-- [ ] `@Roles()` está aplicado en 1 de ~15 endpoints
+- [ ] `@Roles()` está aplicado en 1 de ~15 endpointsgit branch --show-current

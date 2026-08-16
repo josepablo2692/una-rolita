@@ -193,11 +193,16 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    // Busca el rol real. Si por alguna razón no tiene ninguno asignado
-    // en user_venue_roles, no debería poder loguear como staff en
-    // absoluto — es una cuenta a medio configurar.
+    // Busca el rol real. El ORDER BY roleId ASC no es cosmético: el
+    // catálogo de roles está numerado por privilegio descendente
+    // (1=super_admin, 2=venue_admin, 3=dj, 4=staff), así que el id más
+    // bajo es el rol más alto. Sin este orden, Postgres devuelve la fila
+    // que quiera: un artista solista (venue_admin Y dj en su propio
+    // venue) recibiría 'dj' unas veces y 'venue_admin' otras, perdiendo
+    // acceso a sus propios precios de forma intermitente.
     const assignment = await this.userVenueRoleRepository.findOne({
       where: { userId: user.id },
+      order: { roleId: 'ASC' },
     });
     if (!assignment) {
       throw new UnauthorizedException(
@@ -224,8 +229,7 @@ export class AuthService {
     const { passwordHash, ...safeUser } = user;
 
     return { accessToken, refreshToken, user: safeUser as User };
-  }
-  // Login vía Google — reusa findOrCreateUser (mismo método que
+  } // Login vía Google — reusa findOrCreateUser (mismo método que
   // upgradeGuestToUser), porque el resultado final es el mismo: un
   // User real con email verificado. Solo cambia CÓMO se verificó
   // la identidad (Google, en vez de un código OTP).

@@ -34,6 +34,36 @@ export class VenuesService {
     return venue;
   }
 
+  // Proyección PÚBLICA del venue: lo que un cliente necesita para pedir
+  // canciones, y nada más. findOne() devuelve la Entity completa, que
+  // incluye bankAccountInfo (datos de cuenta bancaria) y spotifyAccountId
+  // — eso jamás debe salir hacia un cliente.
+  //
+  // Lista blanca, no lista negra: enumeramos lo que SÍ sale. Así, el día
+  // que agregues una columna sensible a Venue, no se filtra sola.
+  async findOnePublic(id: string): Promise<Partial<Venue>> {
+    const venue = await this.venueRepository.findOne({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        playlistMode: true,
+        playbackMode: true,
+        cooldownHours: true,
+        queueJumpPrice: true,
+        dedicationPrice: true,
+        comboJumpDedicationPrice: true,
+        isActive: true,
+      },
+    });
+
+    if (!venue) {
+      throw new NotFoundException(`No se encontró un venue con id ${id}`);
+    }
+    return venue;
+  }
+
   calculateSuggestedComboPrice(
     queueJumpPrice: number,
     dedicationPrice: number,
