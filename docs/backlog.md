@@ -2,6 +2,44 @@
 
 Este backlog está listo para copiarse como Issues en GitHub Projects. Cada historia se puede crear como un Issue individual, etiquetado con su épica.
 
+## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
+
+Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
+dinero real a `venue.queueJumpPrice`, a `skipRequest` y a las posiciones de
+cola. Los tres tenían vulnerabilidades explotables. Rama:
+`chore/hardening-pre-epica-3`.
+
+- [x] P0-1: `ValidationPipe` global con `whitelist` + `forbidNonWhitelisted`.
+      Antes NO existía: todos los decoradores de class-validator del proyecto
+      eran inertes y había mass assignment abierto en `repository.create(dto)`
+- [x] P0-2: `VenueRolesGuard` — resuelve el rol del usuario EN EL VENUE DE
+      LA RUTA contra `user_venue_roles`, en vez de leer el `role` del JWT.
+      `RolesGuard` solo comparaba el nombre del rol, así que un `venue_admin`
+      del Bar A podía administrar el Bar B. Aplicado a los 6 endpoints de
+      `VenuesController`
+- [x] P0-3: guards y pertenencia en `QueueController` — `played` estaba sin
+      guard; `skip` exigía JWT pero no rol (habría permitido forzar reembolsos
+      en Épica 3); el `venueId` de la ruta se ignoraba en played/cancel/skip
+      (IDOR, ahora va dentro del WHERE); `tableId` ahora se valida y se
+      verifica que pertenezca al venue y esté activa
+- [x] P0-4: release del lock de Redis ahora es atómico vía script Lua
+      (antes GET+DEL con ventana de carrera); `calculateJumpPosition` empuja
+      a los pedidos posteriores antes de insertar — antes dos saltos pagados
+      quedaban en la misma posición y se cobraba dos veces el mismo lugar
+- [x] P0-5: `GET /venues/:id` devolvía `bankAccountInfo` y
+      `spotifyAccountId`; ahora usa proyección pública de lista blanca.
+      Precios pasan de `@IsNumber()` a `@IsInt()` (ADR 0006)
+- [x] P0-6: `loginStaff` elegía el rol sin `ORDER BY` — un artista solista
+      (venue_admin + dj en su propio venue) recibía cualquiera de los dos al
+      azar. Ahora ordena por `roleId ASC` (menor id = mayor privilegio)
+- [x] Mensajes de error en español en los DTOs tocados y en `JwtAuthGuard`
+- [x] Catálogo de roles agregado a `schema.sql` — la tabla `roles` estaba
+      VACÍA, así que `loginStaff` no podía resolver ningún rol en una base
+      recién creada. Es data de catálogo, no de prueba: producción también
+      la necesita
+- [x] Datos semilla para pruebas (`src/seed/seed.ts`)
+- [ ] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
+
 ## Épica 1 — Auth + QR (registro progresivo)
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
@@ -116,13 +154,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
       ESE día, en ESA máquina, porque alguien la corrió. No es durable:
       nadie va a volver a pegar cinco comandos después de cada cambio.
       Una prueba solo vale si corre sola.
-      Casos a cubrir (uno por cada `curl` ejecutado):
-        1. `venue_admin` cambia precios de SU local → 200
-        2. `venue_admin` cambia precios de local AJENO → 403
-        3. Precio con centavos (4.5) → 400
-        4. `venue_admin` crea mesa en local AJENO → 403
-        5. `super_admin` toca local ajeno → 200
-        6. Campo no declarado en el body (`isAdmin`) → 400
+      Casos a cubrir (uno por cada `curl` ejecutado): 1. `venue_admin` cambia precios de SU local → 200 2. `venue_admin` cambia precios de local AJENO → 403 3. Precio con centavos (4.5) → 400 4. `venue_admin` crea mesa en local AJENO → 403 5. `super_admin` toca local ajeno → 200 6. Campo no declarado en el body (`isAdmin`) → 400
       Requiere: el seed corriendo antes de la suite, y que GitHub Actions
       la ejecute en cada PR. Sin el paso de CI, la prueba existe pero
       nadie se entera cuando falla
@@ -183,44 +215,6 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Vista de facturación: créditos emitidos por venue y por mes,
       derivada del ledger. Insumo para decidir el modelo de precios
       después del piloto.
-
-## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
-
-Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
-dinero real a `venue.queueJumpPrice`, a `skipRequest` y a las posiciones de
-cola. Los tres tenían vulnerabilidades explotables. Rama:
-`chore/hardening-pre-epica-3`.
-
-- [x] P0-1: `ValidationPipe` global con `whitelist` + `forbidNonWhitelisted`.
-      Antes NO existía: todos los decoradores de class-validator del proyecto
-      eran inertes y había mass assignment abierto en `repository.create(dto)`
-- [x] P0-2: `VenueRolesGuard` — resuelve el rol del usuario EN EL VENUE DE
-      LA RUTA contra `user_venue_roles`, en vez de leer el `role` del JWT.
-      `RolesGuard` solo comparaba el nombre del rol, así que un `venue_admin`
-      del Bar A podía administrar el Bar B. Aplicado a los 6 endpoints de
-      `VenuesController`
-- [x] P0-3: guards y pertenencia en `QueueController` — `played` estaba sin
-      guard; `skip` exigía JWT pero no rol (habría permitido forzar reembolsos
-      en Épica 3); el `venueId` de la ruta se ignoraba en played/cancel/skip
-      (IDOR, ahora va dentro del WHERE); `tableId` ahora se valida y se
-      verifica que pertenezca al venue y esté activa
-- [x] P0-4: release del lock de Redis ahora es atómico vía script Lua
-      (antes GET+DEL con ventana de carrera); `calculateJumpPosition` empuja
-      a los pedidos posteriores antes de insertar — antes dos saltos pagados
-      quedaban en la misma posición y se cobraba dos veces el mismo lugar
-- [x] P0-5: `GET /venues/:id` devolvía `bankAccountInfo` y
-      `spotifyAccountId`; ahora usa proyección pública de lista blanca.
-      Precios pasan de `@IsNumber()` a `@IsInt()` (ADR 0006)
-- [x] P0-6: `loginStaff` elegía el rol sin `ORDER BY` — un artista solista
-      (venue_admin + dj en su propio venue) recibía cualquiera de los dos al
-      azar. Ahora ordena por `roleId ASC` (menor id = mayor privilegio)
-- [x] Mensajes de error en español en los DTOs tocados y en `JwtAuthGuard`
-- [x] Catálogo de roles agregado a `schema.sql` — la tabla `roles` estaba
-      VACÍA, así que `loginStaff` no podía resolver ningún rol en una base
-      recién creada. Es data de catálogo, no de prueba: producción también
-      la necesita
-- [x] Datos semilla para pruebas (`src/seed/seed.ts`)
-- [ ] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
 
 ### Hallazgos nuevos, diferidos
 

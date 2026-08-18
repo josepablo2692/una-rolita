@@ -84,11 +84,7 @@ export class QueueController {
     @Param('requestId') requestId: string,
     @Req() req: Request & { user: { userId: string } },
   ): Promise<QueueRequest> {
-    return this.queueService.cancelRequest(
-      venueId,
-      requestId,
-      req.user.userId,
-    );
+    return this.queueService.cancelRequest(venueId, requestId, req.user.userId);
   }
 
   // Saltar un pedido — decisión del artista/DJ. En Épica 3 esta acción
