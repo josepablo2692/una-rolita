@@ -37,6 +37,8 @@ export class VenueRolesGuard implements CanActivate {
     private readonly reflector: Reflector,
     @InjectRepository(UserVenueRole)
     private readonly userVenueRoleRepository: Repository<UserVenueRole>,
+    @InjectRepository(Role)
+    private readonly roleRepository: Repository<Role>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -70,19 +72,24 @@ export class VenueRolesGuard implements CanActivate {
       request.venueRoles = ['super_admin'];
       return true;
     }
+    // Dos consultas simples en vez de un JOIN con QueryBuilder.
+    // La primera va contra la llave primaria compuesta
+    // (user_id, venue_id, role_id): búsqueda por índice.
+    // La segunda es el catálogo de roles — cinco filas, siempre en caché
+    // de Postgres. El costo es despreciable y a cambio no dependemos de
+    // que el QueryBuilder traduzca bien los nombres de columna.
+    const asignaciones = await this.userVenueRoleRepository.find({
+      where: { userId: request.user.userId, venueId },
+    });
 
-    // Una sola consulta: trae los NOMBRES de los roles que este usuario
-    // tiene en ESTE venue. Va contra la llave primaria compuesta
-    // (user_id, venue_id, role_id), así que es una búsqueda por índice.
-    const rows = await this.userVenueRoleRepository
-      .createQueryBuilder('uvr')
-      .innerJoin(Role, 'role', 'role.id = uvr.roleId')
-      .select('role.name', 'name')
-      .where('uvr.userId = :userId', { userId: request.user.userId })
-      .andWhere('uvr.venueId = :venueId', { venueId })
-      .getRawMany<{ name: string }>();
+    if (asignaciones.length === 0) {
+      throw new ForbiddenException('No tienes acceso a este negocio');
+    }
 
-    const venueRoles = rows.map((r) => r.name);
+    const catalogo = await this.roleRepository.find();
+    const venueRoles = asignaciones
+      .map((a) => catalogo.find((r) => r.id === a.roleId)?.name)
+      .filter((nombre): nombre is string => Boolean(nombre));
 
     if (venueRoles.length === 0) {
       throw new ForbiddenException('No tienes acceso a este negocio');

@@ -6,6 +6,7 @@ import { QueueRequest } from './entities/queue-request.entity';
 import { QueueJump } from './entities/queue-jump.entity';
 import { VenuesModule } from '../venues/venues.module';
 import { AuthModule } from '../auth/auth.module';
+import { AuthorizationModule } from '../auth/authorization.module';
 import { RedisModule } from '../../redis/redis.module';
 import { QueueController } from './queue.controller';
 import { QueueService } from './queue.service';
@@ -18,6 +19,10 @@ import { QueueGateway } from './queue.gateway';
     // y hacia User (auth) — por eso ambos módulos deben estar aquí.
     VenuesModule,
     AuthModule,
+    // Provee VenueRolesGuard y los repositorios que necesita. Nest
+    // construye el guard dentro de ESTE módulo (porque aquí vive el
+    // controller que lo usa en @UseGuards), no donde se declaró.
+    AuthorizationModule,
     // El lock distribuido (Redlock) que evita que dos personas paguen
     // por la misma posición de cola al mismo tiempo.
     RedisModule,

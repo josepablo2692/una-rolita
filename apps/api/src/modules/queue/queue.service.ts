@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { MoreThan, MoreThanOrEqual, Repository } from 'typeorm';
 import Redis from 'ioredis';
 import { randomUUID } from 'crypto';
 import { REDIS_CLIENT } from '../../redis/redis.module';
@@ -14,6 +14,7 @@ import { Song } from './entities/song.entity';
 import { VenueSongHistory } from './entities/venue-song-history.entity';
 import { QueueRequest } from './entities/queue-request.entity';
 import { QueueJump } from './entities/queue-jump.entity';
+import { VenueTable } from '../venues/entities/venue-table.entity';
 import { VenuesService } from '../venues/venues.service';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
 import { QueueGateway } from './queue.gateway';
@@ -26,6 +27,24 @@ const JUMP_COOLDOWN_IN_SONGS = 2;
 // Duración del lock de Redis: suficiente para completar la operación
 // de asignar posición, corta para no bloquear a otros por error.
 const LOCK_TTL_MS = 5000;
+
+// Script Lua para liberar el lock de forma ATÓMICA.
+//
+// Antes hacíamos GET y luego DEL como dos operaciones separadas. Entre
+// una y otra hay una ventana: si el lock expiraba justo ahí y otro
+// proceso lo tomaba, borrábamos el candado ajeno — exactamente lo que
+// el lockValue con UUID intentaba evitar.
+//
+// Redis ejecuta un script Lua completo sin interrumpirlo: es una sola
+// operación indivisible. Es la forma canónica de hacer un
+// "compare-and-delete" y viene documentada en la propia guía de Redis.
+const RELEASE_LOCK_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+else
+  return 0
+end
+`;
 
 @Injectable()
 export class QueueService {
@@ -40,6 +59,8 @@ export class QueueService {
     private readonly queueRequestRepository: Repository<QueueRequest>,
     @InjectRepository(QueueJump)
     private readonly queueJumpRepository: Repository<QueueJump>,
+    @InjectRepository(VenueTable)
+    private readonly venueTableRepository: Repository<VenueTable>,
     private readonly venuesService: VenuesService,
     private readonly queueGateway: QueueGateway, // <- nuevo
   ) {}
@@ -54,6 +75,18 @@ export class QueueService {
     dto: CreateQueueRequestDto,
   ): Promise<QueueRequest> {
     const venue = await this.venuesService.findOne(venueId); // Guard Clause: el venue debe existir
+
+    // Guard Clause (IDOR): la mesa debe pertenecer a ESTE venue y estar
+    // activa. Antes se aceptaba cualquier tableId: se podía pedir desde
+    // la "mesa 3 del Bar A" estando sentado en el Bar B.
+    const table = await this.venueTableRepository.findOne({
+      where: { id: tableId, venueId, isActive: true },
+    });
+    if (!table) {
+      throw new BadRequestException(
+        'La mesa indicada no pertenece a este negocio o está inactiva',
+      );
+    }
 
     const song = await this.findOrCreateSong(dto);
     await this.assertCooldownNotActive(venueId, song.id, venue.cooldownHours);
@@ -131,13 +164,18 @@ export class QueueService {
 
   // Marca una canción como reproducida y la registra en el historial
   // (VenueSongHistory), que es lo que alimenta el cooldown a futuro.
-  async markAsPlayed(id: string): Promise<QueueRequest> {
+  async markAsPlayed(venueId: string, id: string): Promise<QueueRequest> {
+    // El venueId va en el WHERE, no en un if posterior. Buscar
+    // "el pedido X que además es de este local" hace que un pedido de
+    // otro venue simplemente no exista para esta consulta: mismo 404,
+    // sin revelar si el id es real. Filtrar en la consulta es más
+    // seguro que traer el dato y después comprobarlo.
     const request = await this.queueRequestRepository.findOne({
-      where: { id },
+      where: { id, venueId },
     });
     if (!request) {
       throw new NotFoundException(
-        `No se encontró el pedido de cola con id ${id}`,
+        `No se encontró el pedido ${id} en este negocio`,
       );
     }
 
@@ -158,12 +196,18 @@ export class QueueService {
   // Cancela un pedido — solo el usuario dueño puede hacerlo. No borra
   // la fila (igual que markAsPlayed), solo cambia su estado, para
   // conservar el historial completo.
-  async cancelRequest(id: string, userId: string): Promise<QueueRequest> {
+  async cancelRequest(
+    venueId: string,
+    id: string,
+    userId: string,
+  ): Promise<QueueRequest> {
     const request = await this.queueRequestRepository.findOne({
-      where: { id },
+      where: { id, venueId },
     });
     if (!request) {
-      throw new NotFoundException(`No se encontró el pedido con id ${id}`);
+      throw new NotFoundException(
+        `No se encontró el pedido ${id} en este negocio`,
+      );
     }
 
     if (request.userId !== userId) {
@@ -186,13 +230,17 @@ export class QueueService {
 
     return request;
   }
-  // queue.service.ts — agrega junto a cancelRequest
-  async skipRequest(id: string): Promise<QueueRequest> {
+  // Saltar un pedido — decisión unilateral del artista/DJ. El cliente no
+  // incumplió nada, así que en Épica 3 esto dispara reembolso TOTAL
+  // (ADR 0006). Por eso el endpoint exige rol dj/venue_admin.
+  async skipRequest(venueId: string, id: string): Promise<QueueRequest> {
     const request = await this.queueRequestRepository.findOne({
-      where: { id },
+      where: { id, venueId },
     });
     if (!request) {
-      throw new NotFoundException(`No se encontró el pedido con id ${id}`);
+      throw new NotFoundException(
+        `No se encontró el pedido ${id} en este negocio`,
+      );
     }
     if (request.status !== 'queued') {
       throw new BadRequestException(
@@ -318,25 +366,49 @@ export class QueueService {
     return (last?.position ?? 0) + 1;
   }
 
-  // Posición de salto pagado: justo después de lo que ya está sonando
-  // (posición 1) — al frente de todos los pedidos normales en espera.
+  // Posición de salto pagado: justo después de lo que ya está sonando.
+  //
+  // El paso clave es EMPUJAR a los demás. Antes solo se devolvía
+  // `playing.position + 1` sin mover a nadie: si la canción sonando
+  // estaba en la 5, el salto iba a la 6 — donde ya había alguien. Dos
+  // saltos pagados seguidos quedaban ambos en la 6, y el ORDER BY
+  // position desempataba al azar. Le cobrábamos a dos personas por el
+  // mismo lugar, y no garantizábamos la posición que vendimos.
+  //
+  // Corre dentro del lock de Redis, así que ningún otro pedido de este
+  // venue puede calcular posiciones mientras esto sucede.
   private async calculateJumpPosition(venueId: string): Promise<number> {
     const playing = await this.queueRequestRepository.findOne({
       where: { venueId, status: 'playing' as const },
     });
-    return (playing?.position ?? 0) + 1;
+    const targetPosition = (playing?.position ?? 0) + 1;
+
+    // Un solo UPDATE, atómico en Postgres: corre a todos los que están
+    // en la posición destino o más atrás.
+    await this.queueRequestRepository.increment(
+      {
+        venueId,
+        status: 'queued' as const,
+        position: MoreThanOrEqual(targetPosition),
+      },
+      'position',
+      1,
+    );
+
+    return targetPosition;
   }
 
-  // Libera el lock SOLO si sigue siendo el que este proceso creó —
-  // evita borrar por accidente el candado de otro proceso si el
-  // nuestro ya expiró y alguien más lo tomó mientras tanto.
+  // Libera el lock SOLO si sigue siendo el que este proceso creó.
+  // La comparación y el borrado van en un script Lua (ver
+  // RELEASE_LOCK_SCRIPT arriba) para que sean una sola operación
+  // atómica: con GET + DEL separados existía una ventana en la que
+  // podíamos borrar el candado de otro proceso.
   private async releaseLockIfOwned(
     lockKey: string,
     lockValue: string,
   ): Promise<void> {
-    const currentValue = await this.redis.get(lockKey);
-    if (currentValue === lockValue) {
-      await this.redis.del(lockKey);
-    }
+    // eval(script, cantidadDeKeys, ...keys, ...argumentos)
+    // KEYS[1] = lockKey, ARGV[1] = lockValue
+    await this.redis.eval(RELEASE_LOCK_SCRIPT, 1, lockKey, lockValue);
   }
 }

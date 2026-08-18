@@ -10,9 +10,13 @@ import {
 
 // Datos mínimos que el cliente manda al pedir una canción. Si la canción
 // no existe todavía en el catálogo (Song), el Service la crea al vuelo.
+//
+// Los mensajes van en español: son texto que ve el usuario final.
 
-// apps/api/src/modules/queue/dto/create-queue-request.dto.ts
 export class CreateQueueRequestDto {
+  // Antes viajaba como tipo de intersección en el Controller, fuera del
+  // DTO — por eso nunca se validaba. Ahora es una propiedad declarada:
+  // class-validator la ve y el ValidationPipe la exige.
   @IsUUID('4', { message: 'La mesa indicada no es válida' })
   tableId!: string;
 
