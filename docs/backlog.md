@@ -71,12 +71,29 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
 
 ## Épica 3 — Créditos y pagos
 
-- [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
-- [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
+- [x] Modelo de créditos y transacciones (`payment_method`, saldo) — libro
+      mayor inmutable según ADR 0006. Esquema en `schema.sql` + entidades
+      `CreditAccount` y `CreditTransaction`. Reemplaza el modelo original,
+      que con `CHECK (amount > 0)` no podía registrar un solo gasto
+- [x] Acreditación atómica del saldo (Unit of Work) — `CreditsService.
+      applyTransaction()` es la ÚNICA puerta por la que se mueve un
+      crédito. `SELECT ... FOR UPDATE` dentro de una transacción cierra el
+      hueco entre leer y escribir. Probado con 10 cargas concurrentes que
+      deben dejar exactamente 50 créditos
+- [x] Idempotencia (`idempotency_key`) — el doble clic del mesero devuelve
+      el movimiento original en vez de cobrar dos veces. Chequeo en el
+      servicio + restricción UNIQUE de la base como respaldo ante la carrera
+- [ ] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
+      (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
+      instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
+      su DTO y los guards; el motor (`applyTransaction`) ya está
   - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
+- [ ] Buscar cliente por teléfono desde recepción — endpoint de búsqueda
+      acotado al venue, sin exponer datos de clientes de otros locales
 - [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía `reverses_transaction_id`
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
-- [ ] Acreditación atómica del saldo (Unit of Work)
+      (la columna y el parámetro ya existen; falta exponerlo en el endpoint
+      y en la vista de historial)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
 - [ ] Regla: canción gratis por registro (con control antifraude, usando verificacion de correo) — ya existe `free_song_used` en `users`, falta la lógica de negocio
 - [ ] Expiración de créditos no usados (configurable)
@@ -94,6 +111,45 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
   - Cliente cancela → decisión propia, ya se benefició de la posición
     ganada → NO se reembolsa el salto (`is_paid_jump`); solo se reembolsa
     el costo base de la canción si nunca hubo salto pagado
+
+### Riesgos de base de datos — ordenados por cuánto dolería, no por esfuerzo
+
+Detectados al construir el libro mayor. Son las "sorpresas caras" que no
+avisan: ninguna produce un error hoy.
+
+- [ ] **1. NO HAY RESPALDOS.** Es la única de esta lista que puede matar el
+      negocio. `credit_transactions` es el registro de a quién se le debe
+      cuánto, y el dinero entró en efectivo: no existe rastro externo con
+      el cual reconstruirlo. Si el volumen se pierde (disco, error humano,
+      proveedor), no hay vuelta. Respaldo diario automático DEBE existir
+      antes del 31/ago, no después
+- [ ] **2. `COUNT` que se degrada para siempre.** `queue.service.ts` corre
+      `historyRepository.count({ where: { venueId } })` en cada salto
+      pagado y en cada `registerJump`. Postgres no guarda un contador:
+      recorre las filas. Un bar activo genera ~100k filas al año, y esa
+      consulta se hace más lenta linealmente. No falla nunca — solo un
+      sábado el salto tarda dos segundos y "el sistema está lento".
+      Arreglar con un contador incremental por venue
+- [ ] **3. Interbloqueos — llegan en el PR de cobros.** Hoy se bloquea UNA
+      fila por transacción, así que es imposible. Pero pedir una canción va
+      a tocar dos recursos: la cuenta de créditos y las posiciones de cola.
+      REGLA A FIJAR ANTES DE ESCRIBIR ESE CÓDIGO: siempre en el mismo
+      orden, primero el crédito y después la cola (si no hay saldo, no
+      vale la pena tocar posiciones)
+- [ ] **4. Pool de conexiones.** TypeORM abre ~10 conexiones por instancia;
+      Postgres acepta ~100 por defecto. Con una instancia sobra; con varias
+      detrás de un balanceador se multiplica hasta que la app no puede
+      conectarse. Se define al desplegar, junto con el proveedor
+- [ ] **5. Verificación diaria de la invariante en TODAS las cuentas.**
+      `verifyIntegrity` valida una sola. En producción hace falta un job
+      que recorra todas y avise. Debe devolver SIEMPRE cero filas:
+      ```sql
+      SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
+        FROM credit_accounts ca
+        LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
+       GROUP BY ca.id, ca.balance
+      HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
+      ```
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
