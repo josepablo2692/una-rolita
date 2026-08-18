@@ -76,20 +76,82 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
       `CreditAccount` y `CreditTransaction`. Reemplaza el modelo original,
       que con `CHECK (amount > 0)` no podía registrar un solo gasto
 - [x] Acreditación atómica del saldo (Unit of Work) — `CreditsService.
-      applyTransaction()` es la ÚNICA puerta por la que se mueve un
+    applyTransaction()` es la ÚNICA puerta por la que se mueve un
       crédito. `SELECT ... FOR UPDATE` dentro de una transacción cierra el
       hueco entre leer y escribir. Probado con 10 cargas concurrentes que
       deben dejar exactamente 50 créditos
 - [x] Idempotencia (`idempotency_key`) — el doble clic del mesero devuelve
       el movimiento original en vez de cobrar dos veces. Chequeo en el
       servicio + restricción UNIQUE de la base como respaldo ante la carrera
-- [ ] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
+- [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
       (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
       instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
       su DTO y los guards; el motor (`applyTransaction`) ya está
   - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
-- [ ] Buscar cliente por teléfono desde recepción — endpoint de búsqueda
-      acotado al venue, sin exponer datos de clientes de otros locales
+- [x] Buscar cliente desde recepción por correo O teléfono
+      (`GET /venues/:venueId/credits/account`) — coincidencia EXACTA, nunca
+      parcial: con `LIKE` cualquier empleado podría pescar los datos de
+      todos los clientes de la plataforma. Proyección de lista blanca
+
+### Identificación del cliente en recepción — código efímero + QR
+
+HALLAZGO que originó esto: `users.phone_number` está vacío para TODOS los
+usuarios y va a seguir así. El registro es por OTP de correo
+(`EmailOtpSender`); nadie escribe nunca esa columna. La búsqueda por
+teléfono existe pero no encuentra a nadie.
+
+Y dictar un correo en un bar con música alta es impracticable.
+
+PRINCIPIO: **el correo es la IDENTIDAD verificada (OTP); el teléfono y el
+código son solo LLAVES DE BÚSQUEDA.** Un teléfono mal escrito no
+contamina nada — por eso no necesita verificación, y por eso NUNCA debe
+usarse para decidir nada de dinero ni de antifraude.
+
+Flujo objetivo: el cliente toca "Cargar créditos", su app muestra un QR
+grande con el código legible debajo y una cuenta regresiva. El mesero
+escanea o teclea, ve nombre y saldo, y carga.
+
+- [ ] Generar código efímero: `POST /venues/:venueId/credits/claim-code`
+      — lo pide el cliente autenticado, devuelve código + segundos de
+      vigencia. Se guarda en REDIS, no en tabla: es efímero por
+      naturaleza y Redis lo borra solo. Es el mismo patrón que ya usa
+      OtpService, reutilizarlo
+- [ ] Alfabeto sin caracteres ambiguos (sin `0/O`, `1/I/L`, `5/S`).
+      6 posiciones sobre 31 caracteres ≈ 900 millones de combinaciones
+- [ ] Vigencia ~3 minutos. El riesgo NO es robo (nadie gana haciéndose
+      pasar por otro para que le carguen crédito a esa otra persona), es
+      CONFUSIÓN: que el mesero escanee la captura de pantalla vieja de
+      otra mesa y cargue al cliente equivocado
+- [ ] UN SOLO USO: se invalida tras una carga exitosa. Sin esto, un
+      segundo mesero podría escanear el mismo código vigente y cobrar dos
+      veces — y la idempotencia NO lo detendría, porque serían dos
+      operaciones con llaves distintas
+- [ ] Amarrado al venue: un código del Bar A no sirve en el Gimnasio B
+- [ ] Rate limiting en el endpoint de canje — 900 millones de
+      combinaciones son muchas, pero no infinitas
+- [ ] SEPARACIÓN DE PRIVILEGIOS (esto es lo que da el control):
+  - Buscar por CÓDIGO → `staff` y `venue_admin`. Operación normal, cien
+    veces por noche. Un mesero puede trabajar todo el turno sin ver jamás
+    el correo de nadie
+  - Buscar por CORREO o TELÉFONO → **solo `venue_admin`**, y se registra
+    en `audit_logs`. Es la vía de excepción: reclamo, código vencido,
+    celular sin batería. Consultar los datos de un cliente pasa a ser un
+    acto excepcional, con responsable y con huella
+- [ ] Frontend (Épica 6): pantalla del cliente con QR + código legible +
+      cuenta regresiva; pantalla de recepción con escáner y campo manual
+- [ ] Captura oportunista del teléfono: el `lookup` ya devuelve
+      `tienePhone`. Cuando exista el frontend, si viene en `false` la
+      pantalla de recepción ofrece capturarlo. Se pide DESPUÉS de que el
+      cliente ya está comprando, no en el registro — cero fricción para
+      quien recién llega, y solo lo dan quienes ya son clientes reales
+- [ ] Post-lanzamiento: evaluar código PERMANENTE de cliente como
+      respaldo del efímero (celular descargado, sin datos)
+
+- [ ] Verificar en la documentación de Meta si Facebook Login puede
+      entregar el teléfono. Si no puede (lo más probable), Facebook
+      resuelve la fricción del registro pero NO el problema de
+      identificación en recepción — el teléfono tiene que capturarse en
+      nuestro flujo, no depender del método de registro
 - [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía `reverses_transaction_id`
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
       (la columna y el parámetro ya existen; falta exponerlo en el endpoint
@@ -143,13 +205,13 @@ avisan: ninguna produce un error hoy.
 - [ ] **5. Verificación diaria de la invariante en TODAS las cuentas.**
       `verifyIntegrity` valida una sola. En producción hace falta un job
       que recorra todas y avise. Debe devolver SIEMPRE cero filas:
-      ```sql
-      SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
-        FROM credit_accounts ca
-        LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
-       GROUP BY ca.id, ca.balance
-      HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
-      ```
+      `sql
+    SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
+      FROM credit_accounts ca
+      LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
+     GROUP BY ca.id, ca.balance
+    HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
+    `
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -174,6 +236,36 @@ avisan: ninguna produce un error hoy.
 - [ ] Regla anti-acoso: alerta si una mesa recibe muchas dedicatorias de la misma persona
 
 ## Épica 6 — Panel Admin / DJ
+
+### Gestión de personal y roles — HUECO ACTUAL
+
+HALLAZGO: hoy NO existe ninguna forma de crear personal ni de asignar
+roles que no sea SQL a mano contra la base. Un `venue_admin` no puede dar
+de alta a su propio DJ ni a un mesero. Todo el sistema de roles
+(`user_venue_roles`, `RolesGuard`, `VenueRolesGuard`) está construido y
+funcionando, pero no hay puerta para administrarlo.
+
+Consecuencia práctica: cada local nuevo requiere que alguien con acceso a
+Postgres cree las cuentas. No escala más allá de los primeros clientes, y
+es la razón por la que hoy los roles se asignan en el seed.
+
+- [ ] `POST /venues/:venueId/staff` — el `venue_admin` da de alta a su
+      personal (correo + rol). Genera contraseña temporal o invitación
+      por correo
+- [ ] `GET /venues/:venueId/staff` — lista del personal del local con su
+      rol. Solo del local propio, nunca de otros
+- [ ] `PATCH /venues/:venueId/staff/:userId/role` — cambiar el rol de
+      alguien. Con regla: un `venue_admin` NO puede crear otro
+      `venue_admin` ni auto-degradarse (si no, un local puede quedarse
+      sin administrador)
+- [ ] `DELETE /venues/:venueId/staff/:userId` — quitar el acceso.
+      Borra la fila de `user_venue_roles`, NUNCA el usuario: puede tener
+      movimientos de crédito asociados
+- [ ] Un `venue_admin` solo puede asignar roles de MENOR privilegio que
+      el suyo (`dj`, `staff`). Crear `venue_admin` es del `super_admin`
+- [ ] Toda alta, baja y cambio de rol se registra en `audit_logs` — es
+      cambio de permisos sobre un sistema que maneja dinero
+- [ ] Pantalla de gestión de personal en el panel del admin
 
 - [ ] Dashboard con métricas (cola, créditos vendidos, mesas activas)
 - [ ] Vista de cola en vivo con acciones (play/skip)

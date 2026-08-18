@@ -1,6 +1,11 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryFailedError } from 'typeorm';
+import { User } from '../auth/entities/user.entity';
 import { CreditAccount } from './entities/credit-account.entity';
 import {
   CreditTransaction,
@@ -165,6 +170,61 @@ export class CreditsService {
       .findOne({ where: { userId, venueId } });
 
     return cuenta?.balance ?? 0;
+  }
+
+  // Lo que necesita el mesero en un solo paso: encontrar al cliente y ver
+  // su saldo EN ESTE local.
+  //
+  // Acepta teléfono O correo. El correo es la identidad verificada por
+  // OTP; el teléfono es solo una llave de búsqueda cómoda y hoy está
+  // vacío para todos los usuarios (el registro nunca lo pide).
+  //
+  // Coincidencia EXACTA a propósito, nunca parcial. Con una búsqueda tipo
+  // LIKE '5512%' cualquier empleado podría pescar los datos de todos los
+  // clientes de la plataforma, incluidos los de locales ajenos. Con
+  // coincidencia exacta no se puede buscar lo que no se sabe de antemano.
+  //
+  // La proyección es lista blanca: salen id, nombre y si tiene teléfono
+  // registrado — nunca el correo, aunque se haya buscado por él.
+  async findCustomerForTopup(
+    venueId: string,
+    criterio: { phone?: string; email?: string },
+  ): Promise<{
+    userId: string;
+    displayName: string | null;
+    tienePhone: boolean;
+    balance: number;
+  }> {
+    // Guard Clause: exactamente uno de los dos. Ni ninguno (búsqueda
+    // vacía que traería cualquier fila) ni ambos (criterio ambiguo).
+    const criteriosDados = [criterio.phone, criterio.email].filter(Boolean);
+    if (criteriosDados.length !== 1) {
+      throw new BadRequestException(
+        'Indica el teléfono O el correo del cliente, uno de los dos',
+      );
+    }
+
+    const cliente = await this.dataSource.getRepository(User).findOne({
+      where: criterio.phone
+        ? { phoneNumber: criterio.phone }
+        : { email: criterio.email },
+      select: { id: true, displayName: true, phoneNumber: true },
+    });
+
+    if (!cliente) {
+      throw new NotFoundException(
+        'No hay ningún cliente registrado con ese dato. Pídele que escanee el QR de su mesa y se registre.',
+      );
+    }
+
+    return {
+      userId: cliente.id,
+      displayName: cliente.displayName,
+      // Le sirve al mesero para saber si vale la pena pedirle el teléfono
+      // y dejarlo registrado para la próxima vez.
+      tienePhone: cliente.phoneNumber !== null,
+      balance: await this.getBalance(cliente.id, venueId),
+    };
   }
 
   // ==============================================================
