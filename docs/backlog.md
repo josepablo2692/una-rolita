@@ -26,7 +26,8 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] Cooldown de repetición de canción por venue (`assertCooldownNotActive`, usa `cooldownHours` del venue)
 - [x] WebSocket: actualización en vivo de la cola para pantalla del DJ
 - [x] Endpoint: cancelar un pedido en cola
-- [x] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`) — dispara devolución automática de crédito si `is_paid_jump`, sin justificación manual
+- [x] Botón "Saltar" para el artista (marca `queue_request.status = 'skipped'`)
+      — dispara devolución automática y total del crédito, sin justificación manual
 - [x] Paginación en GET /venues/:venueId/queue — limitar resultados cuando la cola crezca mucho (ej. ?limit=20&offset=0)
 - [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
@@ -48,7 +49,13 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
 - [ ] Lógica de freeSongUsed en queue.service.createRequest — leer/voltear el booleano ANTES de cobrar, con lock para evitar doble uso concurrente (depende de Épica 3, sistema de créditos)
-- [ ] Regla de reembolso en cancelRequest: si isPaidJump=true, el monto del salto NO se reembolsa (ya se recibió el beneficio de posición); solo se reembolsa si nunca hubo salto pagado
+- [ ] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
+      no según qué se cobró.
+  - Artista/DJ salta el pedido → el servicio nunca se entregó por decisión
+    del local → reembolso TOTAL (canción + salto + dedicatoria)
+  - Cliente cancela → decisión propia, ya se benefició de la posición
+    ganada → NO se reembolsa el salto (`is_paid_jump`); solo se reembolsa
+    el costo base de la canción si nunca hubo salto pagado
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -102,6 +109,35 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
 - [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
 - [x] Pruebas unitarias para OtpService, RefreshTokenService, AuthService (loginStaff, upgradeGuestToUser)
+- [ ] **PRIORITARIO — Convertir la evidencia manual de Fase 1 en pruebas
+      automáticas** (`test/venue-access.e2e-spec.ts` con supertest).
+      Contexto: los seis P0 se verificaron a mano con `curl.exe` y dieron
+      `200 · 403 · 400 · 403 · 200`. Esa evidencia demuestra que funcionaba
+      ESE día, en ESA máquina, porque alguien la corrió. No es durable:
+      nadie va a volver a pegar cinco comandos después de cada cambio.
+      Una prueba solo vale si corre sola.
+      Casos a cubrir (uno por cada `curl` ejecutado):
+        1. `venue_admin` cambia precios de SU local → 200
+        2. `venue_admin` cambia precios de local AJENO → 403
+        3. Precio con centavos (4.5) → 400
+        4. `venue_admin` crea mesa en local AJENO → 403
+        5. `super_admin` toca local ajeno → 200
+        6. Campo no declarado en el body (`isAdmin`) → 400
+      Requiere: el seed corriendo antes de la suite, y que GitHub Actions
+      la ejecute en cada PR. Sin el paso de CI, la prueba existe pero
+      nadie se entera cuando falla
+- [ ] **BLOQUEA lo anterior** — Extraer la configuración global de la app
+      (`ValidationPipe`, y más adelante filtros e interceptores) a una
+      función reutilizable, ej. `src/common/setup-app.ts`, que llamen tanto
+      `main.ts` como el `beforeAll` de las pruebas e2e.
+      Motivo: las pruebas e2e arman la app con
+      `Test.createTestingModule({ imports: [AppModule] })`, y `main.ts` NO
+      participa — así que el `ValidationPipe` no existe en el entorno de
+      prueba. Hoy eso significa que una prueba de "campo colado devuelve
+      400" fallaría aunque el código esté bien. Y si se duplica la config
+      a mano en cada prueba, el día que cambie una de las dos copias las
+      pruebas dejan de reflejar producción: pasarían en verde mientras el
+      servidor real se comporta distinto
 - [ ] Pruebas e2e del flujo completo: scan → otp → upgrade → refresh → revoke
 - [ ] Pruebas de RolesGuard (con y sin rol permitido)
 - [ ] Estrategia de pruebas completa antes del 31/ago: unitarias + e2e + concurrencia + caja blanca + caja negra
@@ -113,6 +149,25 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Checklist de "listo para producción" por módulo (backend Y frontend cuando exista)
 - [ ] Restringir CORS de QueueGateway (cors: { origin: '*' }) al dominio real del frontend antes de producción — actualmente abierto a cualquier origen, solo válido en desarrollo
 - [ ] Redis Adapter para Socket.io — necesario SOLO cuando se corra más de una instancia del servidor (escalamiento horizontal)
+- [ ] Migraciones de TypeORM antes del segundo despliegue a producción.
+      `schema.sql` queda como línea base (migración 0); de ahí en adelante todo
+      cambio de esquema es una migración versionada. Sin esto, el primer cambio
+      de columna en producción es manual y sin vuelta atrás
+- [ ] Pruebas de `VenueRolesGuard`: rol correcto en venue propio (pasa),
+      rol correcto en venue ajeno (403), sin rol en el venue (403),
+      super_admin en cualquier venue (pasa)
+- [ ] Pruebas de aislamiento entre locales: pedido del Bar A no accesible
+      desde la ruta del Bar B
+- [ ] Separar el rol de PLATAFORMA del rol de VENUE. Hoy `super_admin`
+      necesita una fila nominal en `user_venue_roles` para que `loginStaff`
+      le emita token, aunque no pertenezca a ningún local. Opciones:
+      columna `users.is_platform_admin`, o tabla `platform_roles` aparte.
+      Se vuelve urgente cuando existan varios super_admin o un rol de
+      "cobrador" que tampoco pertenece a ningún local
+- [x] Datos semilla (`pnpm --filter api run seed`) — dos locales
+      independientes con personal propio, idempotente, bloqueado en
+      producción por `NODE_ENV`. Es lo que hace posible probar el
+      aislamiento entre negocios
 
 ## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
 
@@ -125,3 +180,132 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Credenciales OAuth adicionales (Android/iOS) cuando exista app móvil nativa — backend no cambia
 - [ ] Botón opcional "Síguenos en WhatsApp" (link wa.me) al pedir número de teléfono — incentivo, NUNCA obligatorio (contradice regla de 3 clics)
 - [ ] Verificar reglas reales de visibilidad de Estados de WhatsApp antes de diseñar la estrategia (¿requiere guardado mutuo?)
+- [ ] Vista de facturación: créditos emitidos por venue y por mes,
+      derivada del ledger. Insumo para decidir el modelo de precios
+      después del piloto.
+
+## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
+
+Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
+dinero real a `venue.queueJumpPrice`, a `skipRequest` y a las posiciones de
+cola. Los tres tenían vulnerabilidades explotables. Rama:
+`chore/hardening-pre-epica-3`.
+
+- [x] P0-1: `ValidationPipe` global con `whitelist` + `forbidNonWhitelisted`.
+      Antes NO existía: todos los decoradores de class-validator del proyecto
+      eran inertes y había mass assignment abierto en `repository.create(dto)`
+- [x] P0-2: `VenueRolesGuard` — resuelve el rol del usuario EN EL VENUE DE
+      LA RUTA contra `user_venue_roles`, en vez de leer el `role` del JWT.
+      `RolesGuard` solo comparaba el nombre del rol, así que un `venue_admin`
+      del Bar A podía administrar el Bar B. Aplicado a los 6 endpoints de
+      `VenuesController`
+- [x] P0-3: guards y pertenencia en `QueueController` — `played` estaba sin
+      guard; `skip` exigía JWT pero no rol (habría permitido forzar reembolsos
+      en Épica 3); el `venueId` de la ruta se ignoraba en played/cancel/skip
+      (IDOR, ahora va dentro del WHERE); `tableId` ahora se valida y se
+      verifica que pertenezca al venue y esté activa
+- [x] P0-4: release del lock de Redis ahora es atómico vía script Lua
+      (antes GET+DEL con ventana de carrera); `calculateJumpPosition` empuja
+      a los pedidos posteriores antes de insertar — antes dos saltos pagados
+      quedaban en la misma posición y se cobraba dos veces el mismo lugar
+- [x] P0-5: `GET /venues/:id` devolvía `bankAccountInfo` y
+      `spotifyAccountId`; ahora usa proyección pública de lista blanca.
+      Precios pasan de `@IsNumber()` a `@IsInt()` (ADR 0006)
+- [x] P0-6: `loginStaff` elegía el rol sin `ORDER BY` — un artista solista
+      (venue_admin + dj en su propio venue) recibía cualquiera de los dos al
+      azar. Ahora ordena por `roleId ASC` (menor id = mayor privilegio)
+- [x] Mensajes de error en español en los DTOs tocados y en `JwtAuthGuard`
+- [x] Catálogo de roles agregado a `schema.sql` — la tabla `roles` estaba
+      VACÍA, así que `loginStaff` no podía resolver ningún rol en una base
+      recién creada. Es data de catálogo, no de prueba: producción también
+      la necesita
+- [x] Datos semilla para pruebas (`src/seed/seed.ts`)
+- [ ] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
+
+### Hallazgos nuevos, diferidos
+
+- [ ] La inserción del pedido y el empuje de posiciones son dos escrituras
+      sin transacción de BD. Un fallo entre ambas deja un hueco en la
+      numeración (no corrompe el orden). Se envuelve en transacción cuando
+      Épica 3 agregue el débito de créditos como tercera escritura
+- [ ] `findOrCreateSong` puede correr en carrera entre dos venues pidiendo
+      la misma canción por primera vez y violar
+      `UNIQUE(provider, provider_track_id)`. Resolver con
+      `ON CONFLICT DO NOTHING` (P2)
+- [ ] Los parámetros de ruta no se validan. El `ValidationPipe` global cubre
+      el CUERPO de la petición, pero `@Param('id') id: string` pasa sin
+      revisar: un UUID malformado llega hasta Postgres y produce un 500
+      (`invalid input syntax for type uuid`) en vez de un 400. Aplicar
+      `ParseUUIDPipe` en `venues.controller.ts` y `queue.controller.ts`
+- [ ] `RedisModule` no cierra su conexión: crea el cliente con `useFactory`
+      pero no implementa `onModuleDestroy`, así que `app.close()` no lo
+      desconecta. En la API no se nota porque el proceso vive para siempre,
+      pero deja conexiones colgadas del lado del servidor en cada reinicio,
+      y cuelga cualquier script de una sola pasada (nos pasó con el seed).
+      Arreglar con un provider que implemente `OnModuleDestroy`
+- [ ] Paginación de `GET /queue` usa `parseInt` sin validar: `?limit=999999`
+      descarga toda la cola, `?limit=abc` produce NaN. Debe ser un DTO con
+      `@Type(() => Number) @IsInt() @Min(1) @Max(100)` (P2)
+
+## Épica 9 — Generación e impresión de QR
+
+Premisa: el local imprime UNA VEZ y no vuelve a tocar el papel. La
+unicidad ya está resuelta (`randomUUID()` = 122 bits + columna UNIQUE +
+`UNIQUE (venue_id, label)`); un token no se adivina. El riesgo real es
+otro: **alguien fotografía el QR y lo comparte**, y desde su casa
+cualquiera crea sesión y pide canciones. Un QR pegado en una mesa no es
+una credencial secreta, es una dirección pública. La seguridad viene de
+que la sesión sea corta, limitada y revocable — no del token.
+
+- [ ] Generación del PDF imprimible: un QR por mesa, con nombre del local
+      y etiqueta de mesa visibles. Impresión por lote de todas las mesas
+      del venue. Es el entregable principal de la épica
+- [ ] Rotar el token de una mesa BAJO DEMANDA, nunca programado
+      (`PATCH /venues/:venueId/tables/:tableId/rotate`) — botón de
+      emergencia para cuando un QR se filtra. Invalida el anterior y
+      obliga a reimprimir SOLO esa mesa. Es la excepción, no la rutina
+- [ ] Vigencia explícita de `table_sessions.expires_at` — la columna ya
+      existe pero falta definir a cuánto se fija (¿4h? ¿cierre del local?).
+      Una sesión eterna vuelve inútil poder rotar el QR
+- [ ] Límite de sesiones simultáneas por mesa y de pedidos por sesión —
+      una mesa de 4 personas no genera 200 pedidos. Es la señal más clara
+      de que un QR se filtró
+- [ ] Bitácora de escaneos por mesa — insumo para detectar el filtrado
+      antes de que el cliente lo reporte
+
+## Épica 10 — Facturación de la plataforma (post-lanzamiento)
+
+Contexto SEPARADO del negocio del venue: aquí Una Rolita le cobra al
+LOCAL. No comparte tablas con `credit_accounts` / `credit_transactions`,
+que son el dinero del local con sus clientes. Mezclar ambos flujos en las
+mismas tablas es el error clásico de este tipo de plataforma.
+
+NO CONSTRUIR ANTES DE TENER ~20 CLIENTES. Con tres o cinco locales, una
+hoja de cálculo y correos escritos a mano funcionan mejor y enseñan cómo
+negocian los dueños. Se automatiza cuando duela.
+
+- [ ] `subscriptions`: venue, plan, precio, ciclo, fecha de corte, estado
+      (prueba / activa / vencida / suspendida)
+- [ ] `invoices` + `invoice_payments` — mismo principio que ADR 0006:
+      nunca editar una factura emitida, emitir nota de crédito
+- [ ] Medidor de uso: créditos emitidos por venue y por mes, derivado del
+      ledger. Ya es posible con el diseño actual, es una sola consulta.
+      El producto ES el medidor: sin créditos emitidos en el sistema,
+      nadie puede pedir canciones
+- [ ] Recordatorio 5 días antes del corte (job programado, `@nestjs/schedule`)
+- [ ] `notification_log`: qué aviso se mandó, a quién, cuándo, por qué
+      canal y si se entregó. Sin esto no podés probar que avisaste
+- [ ] Canal correo (la infraestructura de nodemailer ya existe)
+- [ ] Canal WhatsApp — requiere WhatsApp Business API (Meta directo o
+      proveedor tipo Twilio/360dialog). OJO: las plantillas necesitan
+      aprobación previa de Meta y cada mensaje tiene costo. No es
+      "mandar un WhatsApp", es una integración con trámite
+- [ ] Política de suspensión por falta de pago: ¿se apaga la cola? ¿solo
+      el panel? Decisión de negocio, no técnica
+- [ ] Rol de plataforma "cobrador" — depende de separar roles de
+      plataforma de roles de venue (ver hallazgo del super_admin, Épica 7)
+- [ ] Dashboard super_admin: locales al día / por vencer / vencidos,
+      ingreso mensual recurrente, créditos emitidos por local
+- [ ] Tablero "cuánto generaste este mes" para el venue_admin — no es una
+      función bonita, es la principal herramienta de retención: la
+      mensualidad compra el primer mes, los números compran el segundo

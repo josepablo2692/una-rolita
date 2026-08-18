@@ -63,6 +63,22 @@ CREATE TABLE roles (
 -- 4 = staff        (mesero/recepción, puede cargar créditos)
 -- 5 = customer     (cliente final, rol implícito, normalmente no pasa por login de staff)
 
+-- Data de CATÁLOGO, no de prueba: toda instalación la necesita, incluida
+-- producción. Sin estas filas, loginStaff no puede resolver ningún rol y
+-- nadie del personal puede entrar.
+INSERT INTO roles (id, name) VALUES
+    (1, 'super_admin'),
+    (2, 'venue_admin'),
+    (3, 'dj'),
+    (4, 'staff'),
+    (5, 'customer')
+ON CONFLICT (id) DO NOTHING;
+
+-- Insertar ids explícitos en una columna SERIAL no adelanta el contador
+-- de la secuencia. Sin este setval, el próximo INSERT sin id intentaría
+-- usar el 1 y chocaría con la llave primaria.
+SELECT setval('roles_id_seq', (SELECT MAX(id) FROM roles));
+
 CREATE TABLE user_venue_roles (
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     venue_id    UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,

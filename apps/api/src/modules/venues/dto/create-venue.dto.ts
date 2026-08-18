@@ -2,7 +2,7 @@ import {
   IsString,
   IsIn,
   IsOptional,
-  IsNumber,
+  IsInt,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -35,17 +35,17 @@ export class CreateVenueDto {
   playbackMode?: PlaybackMode;
 
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   @Min(0)
   cooldownHours?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   @Min(0)
   queueJumpPrice?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   @Min(0)
   dedicationPrice?: number;
 }
