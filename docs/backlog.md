@@ -109,6 +109,35 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
 - [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
 - [x] Pruebas unitarias para OtpService, RefreshTokenService, AuthService (loginStaff, upgradeGuestToUser)
+- [ ] **PRIORITARIO — Convertir la evidencia manual de Fase 1 en pruebas
+      automáticas** (`test/venue-access.e2e-spec.ts` con supertest).
+      Contexto: los seis P0 se verificaron a mano con `curl.exe` y dieron
+      `200 · 403 · 400 · 403 · 200`. Esa evidencia demuestra que funcionaba
+      ESE día, en ESA máquina, porque alguien la corrió. No es durable:
+      nadie va a volver a pegar cinco comandos después de cada cambio.
+      Una prueba solo vale si corre sola.
+      Casos a cubrir (uno por cada `curl` ejecutado):
+        1. `venue_admin` cambia precios de SU local → 200
+        2. `venue_admin` cambia precios de local AJENO → 403
+        3. Precio con centavos (4.5) → 400
+        4. `venue_admin` crea mesa en local AJENO → 403
+        5. `super_admin` toca local ajeno → 200
+        6. Campo no declarado en el body (`isAdmin`) → 400
+      Requiere: el seed corriendo antes de la suite, y que GitHub Actions
+      la ejecute en cada PR. Sin el paso de CI, la prueba existe pero
+      nadie se entera cuando falla
+- [ ] **BLOQUEA lo anterior** — Extraer la configuración global de la app
+      (`ValidationPipe`, y más adelante filtros e interceptores) a una
+      función reutilizable, ej. `src/common/setup-app.ts`, que llamen tanto
+      `main.ts` como el `beforeAll` de las pruebas e2e.
+      Motivo: las pruebas e2e arman la app con
+      `Test.createTestingModule({ imports: [AppModule] })`, y `main.ts` NO
+      participa — así que el `ValidationPipe` no existe en el entorno de
+      prueba. Hoy eso significa que una prueba de "campo colado devuelve
+      400" fallaría aunque el código esté bien. Y si se duplica la config
+      a mano en cada prueba, el día que cambie una de las dos copias las
+      pruebas dejan de reflejar producción: pasarían en verde mientras el
+      servidor real se comporta distinto
 - [ ] Pruebas e2e del flujo completo: scan → otp → upgrade → refresh → revoke
 - [ ] Pruebas de RolesGuard (con y sin rol permitido)
 - [ ] Estrategia de pruebas completa antes del 31/ago: unitarias + e2e + concurrencia + caja blanca + caja negra
