@@ -41,6 +41,17 @@ export class Venue {
 
   @Column({ name: 'cooldown_hours', type: 'int', default: 3 })
   cooldownHours!: number;
+  // Costo base de pedir una canción (Q1). Es el cobro más frecuente del
+  // sistema y hasta ahora no tenía columna: vivía como número mágico.
+  @Column({
+    name: 'song_price',
+    type: 'numeric',
+    precision: 10,
+    scale: 2,
+    default: 1.0,
+    transformer: new NumericColumnTransformer(),
+  })
+  songPrice!: number;
 
   @Column({
     name: 'queue_jump_price',
@@ -71,6 +82,11 @@ export class Venue {
     transformer: new NumericColumnTransformer(),
   })
   comboJumpDedicationPrice!: number;
+  // Meses de INACTIVIDAD antes de que expire el saldo de una cuenta.
+  // Configurable por local: un gimnasio y una discoteca tienen ritmos
+  // distintos (ADR 0006).
+  @Column({ name: 'credit_expiry_months', type: 'int', default: 3 })
+  creditExpiryMonths!: number;
 
   @Column({ name: 'bank_account_info', type: 'jsonb', nullable: true })
   bankAccountInfo!: Record<string, unknown> | null;
