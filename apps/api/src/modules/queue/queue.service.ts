@@ -24,6 +24,7 @@ import { VenueTable } from '../venues/entities/venue-table.entity';
 import { User } from '../auth/entities/user.entity';
 import { VenuesService } from '../venues/venues.service';
 import { CreditsService, LedgerLine } from '../credits/credits.service';
+import { CreditTransaction } from '../credits/entities/credit-transaction.entity';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
 import { QueueGateway } from './queue.gateway';
 
@@ -299,79 +300,171 @@ export class QueueService {
     return request;
   }
 
-  // Cancela un pedido — solo el usuario dueño puede hacerlo. No borra
-  // la fila (igual que markAsPlayed), solo cambia su estado, para
-  // conservar el historial completo.
+  // Cancelar el pedido propio — decisión del cliente.
+  //
+  // Si pagó salto de cola, YA recibió la posición que compró: no se
+  // reembolsa. Y con precios totales, todo el precio del salto ES el
+  // producto salto — no hay una "parte canción" separable que devolver.
+  //
+  // Si fue un pedido normal, se le devuelve lo que pagó.
+  // No se borra la fila, solo cambia su estado: el historial se conserva.
   async cancelRequest(
     venueId: string,
     id: string,
     userId: string,
   ): Promise<QueueRequest> {
-    const request = await this.queueRequestRepository.findOne({
-      where: { id, venueId },
+    const actualizado = await this.dataSource.transaction(async (manager) => {
+      const request = await manager.findOne(QueueRequest, {
+        where: { id, venueId },
+      });
+      if (!request) {
+        throw new NotFoundException(
+          `No se encontró el pedido ${id} en este negocio`,
+        );
+      }
+
+      if (request.userId !== userId) {
+        throw new ForbiddenException(
+          'No puedes cancelar el pedido de otra persona',
+        );
+      }
+
+      if (request.status !== 'queued') {
+        throw new BadRequestException(
+          `No se puede cancelar un pedido en estado "${request.status}"`,
+        );
+      }
+
+      // La diferencia con skipRequest está en esta línea: aquí el cliente
+      // decidió retirarse, así que el salto pagado no se devuelve.
+      if (!request.isPaidJump) {
+        const { neto } = await this.netoCobrado(manager, id);
+
+        if (neto < 0) {
+          await this.creditsService.applyLines({
+            userId: request.userId,
+            venueId,
+            manager,
+            lines: [
+              {
+                type: 'refund',
+                amount: Math.abs(neto),
+                queueRequestId: id,
+              },
+            ],
+          });
+        }
+      }
+
+      // La canción gratis NO se restituye al cancelar: fue decisión del
+      // cliente, no un incumplimiento del local.
+
+      request.status = 'cancelled';
+      return manager.save(request);
     });
-    if (!request) {
-      throw new NotFoundException(
-        `No se encontró el pedido ${id} en este negocio`,
-      );
-    }
 
-    if (request.userId !== userId) {
-      throw new ForbiddenException(
-        'No puedes cancelar el pedido de otra persona',
-      );
-    }
+    const updatedQueue = await this.findQueueByVenue(venueId);
+    this.queueGateway.notifyQueueUpdated(venueId, updatedQueue);
 
-    if (request.status !== 'queued') {
-      throw new BadRequestException(
-        `No se puede cancelar un pedido en estado "${request.status}"`,
-      );
-    }
-
-    request.status = 'cancelled';
-    await this.queueRequestRepository.save(request);
-
-    const updatedQueue = await this.findQueueByVenue(request.venueId);
-    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue);
-
-    return request;
+    return actualizado;
   }
-  // Saltar un pedido — decisión unilateral del artista/DJ. El cliente no
-  // incumplió nada, así que en Épica 3 esto dispara reembolso TOTAL
-  // (ADR 0006). Por eso el endpoint exige rol dj/venue_admin.
+
+  // Saltar un pedido — decisión unilateral del artista o el DJ.
+  //
+  // El cliente no hizo nada mal: el servicio nunca se entregó porque el
+  // local decidió no entregarlo. Reembolso TOTAL (ADR 0007). Por eso el
+  // endpoint exige rol dj/venue_admin.
   async skipRequest(venueId: string, id: string): Promise<QueueRequest> {
-    const request = await this.queueRequestRepository.findOne({
-      where: { id, venueId },
+    const actualizado = await this.dataSource.transaction(async (manager) => {
+      // El venueId va dentro del WHERE: un pedido de otro local
+      // simplemente no existe para esta consulta.
+      const request = await manager.findOne(QueueRequest, {
+        where: { id, venueId },
+      });
+      if (!request) {
+        throw new NotFoundException(
+          `No se encontró el pedido ${id} en este negocio`,
+        );
+      }
+
+      // Guard Clause: solo se puede saltar lo que está en cola. También
+      // es lo que impide reembolsar dos veces el mismo pedido.
+      if (request.status !== 'queued') {
+        throw new BadRequestException(
+          `No se puede saltar un pedido en estado "${request.status}"`,
+        );
+      }
+
+      const { neto, fueGratis } = await this.netoCobrado(manager, id);
+
+      // Si se cobró algo, se devuelve completo. `neto` es negativo, así
+      // que el reembolso es su valor absoluto.
+      if (neto < 0) {
+        await this.creditsService.applyLines({
+          userId: request.userId,
+          venueId,
+          manager, // dentro de NUESTRA transacción
+          lines: [
+            {
+              type: 'refund',
+              amount: Math.abs(neto),
+              queueRequestId: id,
+            },
+          ],
+        });
+      }
+
+      // Canción gratis saltada por el artista: no hay crédito que
+      // devolver (el neto fue cero), pero el cliente perdió su promoción
+      // sin recibir nada. Como el local incumplió, se le restituye.
+      if (fueGratis) {
+        const usuario = await manager.findOne(User, {
+          where: { id: request.userId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (usuario) {
+          usuario.freeSongUsed = false;
+          await manager.save(usuario);
+        }
+      }
+
+      request.status = 'skipped';
+      return manager.save(request);
     });
-    if (!request) {
-      throw new NotFoundException(
-        `No se encontró el pedido ${id} en este negocio`,
-      );
-    }
-    if (request.status !== 'queued') {
-      throw new BadRequestException(
-        `No se puede saltar un pedido en estado "${request.status}"`,
-      );
-    }
 
-    request.status = 'skipped';
-    await this.queueRequestRepository.save(request);
+    // El aviso, después del commit.
+    const updatedQueue = await this.findQueueByVenue(venueId);
+    this.queueGateway.notifyQueueUpdated(venueId, updatedQueue);
 
-    // TODO Épica 3: si request.isPaidJump, el monto del salto NO se
-    // reembolsa (ya se recibió el beneficio de posición). Si no era
-    // salto pagado, reembolsar el Q1 de la canción cuando exista
-    // el sistema de créditos.
-
-    const updatedQueue = await this.findQueueByVenue(request.venueId);
-    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue);
-
-    return request;
+    return actualizado;
   }
 
   // ==============================================================
   // Métodos privados: cada uno resuelve UNA sola regla de negocio
   // (Single Responsibility a nivel de método, no solo de clase).
   // ==============================================================
+
+  // Qué se le cobró realmente a este pedido.
+  //
+  // Se excluyen los reembolsos previos para no devolver dos veces. El
+  // neto puede ser CERO: es el caso de la canción gratis, donde el regalo
+  // (+1) y el cobro (−1) se anulan.
+  private async netoCobrado(
+    manager: EntityManager,
+    queueRequestId: string,
+  ): Promise<{ neto: number; fueGratis: boolean }> {
+    const renglones = await manager.find(CreditTransaction, {
+      where: { queueRequestId },
+    });
+
+    const movimientos = renglones.filter((r) => r.type !== 'refund');
+
+    return {
+      // Los cobros son negativos, así que el neto sale negativo o cero.
+      neto: movimientos.reduce((suma, r) => suma + r.amount, 0),
+      fueGratis: movimientos.some((r) => r.type === 'grant_free_song'),
+    };
+  }
 
   // Busca la canción en el catálogo por su ID de proveedor; si no
   // existe todavía, la crea (evita duplicados de la misma canción
@@ -483,15 +576,49 @@ export class QueueService {
   // EMPUJANDO a todos los que estaban ahí o más atrás. Sin el empuje, dos
   // saltos pagados quedan en la misma posición y se cobra dos veces el
   // mismo lugar.
+  // Posición de un salto pagado.
+  //
+  // FIFO ENTRE SALTOS (ADR 0007): el salto nuevo va DESPUÉS de los saltos
+  // que ya están esperando, no adelante de ellos.
+  //
+  // Antes iba siempre a `playing.position + 1`, así que cada salto nuevo
+  // se metía adelante de todos los anteriores: quien pagaba primero
+  // terminaba último entre los que pagaron. Con 10 saltos vendidos en una
+  // noche, el primero pasaba de la posición 2 a la 11 — pagó por una
+  // posición que nunca tuvo.
+  //
+  // Corre dentro del lock de Redis y de la transacción, así que nadie más
+  // puede calcular posiciones para este venue mientras esto sucede.
   private async calculateJumpPosition(
     manager: EntityManager,
     venueId: string,
   ): Promise<number> {
-    const playing = await manager.findOne(QueueRequest, {
-      where: { venueId, status: 'playing' as const },
+    // El último salto pagado que sigue en cola marca el final del bloque
+    // de saltos. El nuevo se pone justo después.
+    const ultimoSalto = await manager.findOne(QueueRequest, {
+      where: {
+        venueId,
+        status: 'queued' as const,
+        isPaidJump: true,
+      },
+      order: { position: 'DESC' },
     });
-    const targetPosition = (playing?.position ?? 0) + 1;
 
+    let targetPosition: number;
+
+    if (ultimoSalto) {
+      targetPosition = ultimoSalto.position + 1;
+    } else {
+      // Nadie ha pagado salto todavía: va justo después de lo que suena.
+      const playing = await manager.findOne(QueueRequest, {
+        where: { venueId, status: 'playing' as const },
+      });
+      targetPosition = (playing?.position ?? 0) + 1;
+    }
+
+    // Empuja una posición a todos los que estaban ahí o más atrás. Sin
+    // esto, dos pedidos quedarían con el mismo número y el ORDER BY
+    // desempataría al azar.
     await manager.increment(
       QueueRequest,
       {

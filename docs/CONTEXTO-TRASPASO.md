@@ -22,6 +22,7 @@ nunca el local, así que un `venue_admin` del Bar A podía administrar el
 Bar B. Detalle completo en `docs/backlog.md` → sección "Fase 0".
 
 **Épica 3 (Créditos): PR 1 de 3 completo (PR #29).**
+
 - Modelo: libro mayor inmutable según ADR 0006
 - `CreditsService.applyTransaction()` — única puerta por la que se mueve
   un crédito. `SELECT ... FOR UPDATE` en transacción
@@ -72,7 +73,7 @@ trámite con terceros: **son lentos y no dependen de nosotros**, así que
 hay que arrancarlos con anticipación, no la semana del lanzamiento.
 
 - **Google OAuth sigue en modo "Testing"** en Google Cloud Console. Solo
-  los correos agregados como *test users* pueden entrar. Cualquier
+  los correos agregados como _test users_ pueden entrar. Cualquier
   cliente real de un bar sería rechazado **por Google, no por nuestro
   código**. La verificación puede exigir política de privacidad pública,
   términos de uso y revisión de la pantalla de consentimiento. Es la
@@ -125,3 +126,9 @@ completa. Proveedor de despliegue: sin decidir (Railway/Render/VPS).
   se hace a mano contra la base: se edita el archivo y se reconstruye.
   Ya hubo dos derivas por saltarse esto (`password_hash` y el CHECK de
   precios existían en la base pero no en el archivo)
+
+- **Simular antes de construir.** Cuando una regla de negocio dependa de
+  volumen o del paso del tiempo, se recorre un escenario concreto con
+  números ANTES de escribir código. Así se encontró el defecto FIFO de la
+  cola: la regla se veía razonable hasta que se simularon 50 pedidos y 10
+  saltos. Un bug de reglas descubierto en el frontend cuesta mucho más

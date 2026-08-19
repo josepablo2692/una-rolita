@@ -225,7 +225,7 @@ en ningún precio publicado.
       se puede contar. Omitir el cobro la habría vuelto invisible
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
-- [ ] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
+- [x] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
 - [ ] Modelo de `Tip` (propina) independiente de `credits` — no comparte tabla ni lógica de gasto. Campo de destino: venue por defecto, artista si "modo artista" está activo
 - [ ] Toggle "modo artista" en configuración del venue — redirige propinas al artista contratado esa noche
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
@@ -240,10 +240,19 @@ en ningún precio publicado.
 - [x] Aviso por WebSocket movido DESPUÉS del commit — notificar dentro de
       la transacción mostraría en la pantalla del DJ una canción que quizá
       nunca se confirme
-- [ ] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
-      no según qué se cobró.
-  - Artista/DJ salta el pedido → el servicio nunca se entregó por decisión
-    del local → reembolso TOTAL (canción + salto + dedicatoria)
+- [x] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
+      no según qué se cobró (ver ADR 0007)
+  - Artista/DJ salta → el local incumplió → reembolso TOTAL, y si era
+    canción gratis se le restituye la promoción
+  - Cliente cancela con salto pagado → recibió la posición → NO se
+    devuelve nada
+  - Cliente cancela un pedido normal → se le devuelve lo que pagó
+- [x] FIFO entre saltos pagados (ADR 0007) — un salto nuevo va DESPUÉS de
+      los saltos que ya esperan, no adelante. El código anterior mandaba
+      cada salto a `playing.position + 1`, así que el último en pagar
+      pasaba adelante de todos: con 10 saltos vendidos, quien pagó primero
+      terminaba en la posición 11. El defecto empeoraba cuanto mejor le
+      iba al negocio
 - [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
       (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
       instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
@@ -291,6 +300,34 @@ LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
  GROUP BY ca.id, ca.balance
 HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
 `
+
+### Cierre de noche — PR 3
+
+Detectado simulando la cola de 50: a las 2 a.m. el bar cierra con pedidos
+en cola, el DJ apaga y se va, y esos pedidos quedan en `queued` PARA
+SIEMPRE. Pagaron, no escucharon nada, y nadie disparó un reembolso.
+
+Y el día siguiente es otra cosa: otra playlist, otro cantante, otras
+canciones. La cola no es perpetua, **pertenece a una sesión**.
+
+- [ ] Tabla `venue_sessions`: venue, `opened_at`, `closed_at`,
+      `closed_by_user_id`, `closed_automatically` (bool). Es lo que
+      permite saber cuánto duró la noche — insumo directo de Épica 8
+- [ ] `queue_requests` se asocia a la sesión abierta del venue
+- [ ] Botón "Cerrar la noche" (rol `dj` o `venue_admin`): salta todos los
+      pedidos pendientes y dispara el reembolso de cada uno con la regla
+      de ADR 0007 (el local no entregó)
+- [ ] **El cliente TIENE que ver su reembolso.** Un crédito que vuelve en
+      silencio no genera confianza; uno anunciado sí. Aviso por WebSocket + historial visible en su pantalla
+- [ ] **RED DE SEGURIDAD — el admin se va a olvidar de cerrar, y eso no
+      nos puede perjudicar.** Cierre automático por inactividad: un job
+      programado (`@nestjs/schedule`) cierra las sesiones sin actividad
+      por N horas (configurable por venue), marcando
+      `closed_automatically = true` para distinguirlas en las métricas.
+      Una sesión mal cerrada NO debe contaminar la duración promedio
+- [ ] Un pedido de una sesión cerrada nunca es reproducible ni cancelable
+- [ ] Métrica de sesión: duración, canciones sonadas, créditos emitidos y
+      gastados, reembolsos. Es el "cuánto generaste hoy" del admin
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -379,6 +416,8 @@ es la razón por la que hoy los roles se asignan en el seed.
 - [ ] Service worker básico para instalabilidad
 - [ ] Prompt activo de "instalar app" (evento beforeinstallprompt), no depender de que el usuario lo encuentre solo
 - [ ] Auditar cada flujo principal contra la regla de 3 clics antes de darlo por terminado
+- [ ] Botón "Cerrar la noche" en el panel del DJ, con confirmación que
+      diga cuántos pedidos se van a reembolsar antes de apretar
 
 ## Épica 7 — Infraestructura y calidad
 
