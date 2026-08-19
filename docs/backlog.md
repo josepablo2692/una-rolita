@@ -2,6 +2,44 @@
 
 Este backlog está listo para copiarse como Issues en GitHub Projects. Cada historia se puede crear como un Issue individual, etiquetado con su épica.
 
+## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
+
+Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
+dinero real a `venue.queueJumpPrice`, a `skipRequest` y a las posiciones de
+cola. Los tres tenían vulnerabilidades explotables. Rama:
+`chore/hardening-pre-epica-3`.
+
+- [x] P0-1: `ValidationPipe` global con `whitelist` + `forbidNonWhitelisted`.
+      Antes NO existía: todos los decoradores de class-validator del proyecto
+      eran inertes y había mass assignment abierto en `repository.create(dto)`
+- [x] P0-2: `VenueRolesGuard` — resuelve el rol del usuario EN EL VENUE DE
+      LA RUTA contra `user_venue_roles`, en vez de leer el `role` del JWT.
+      `RolesGuard` solo comparaba el nombre del rol, así que un `venue_admin`
+      del Bar A podía administrar el Bar B. Aplicado a los 6 endpoints de
+      `VenuesController`
+- [x] P0-3: guards y pertenencia en `QueueController` — `played` estaba sin
+      guard; `skip` exigía JWT pero no rol (habría permitido forzar reembolsos
+      en Épica 3); el `venueId` de la ruta se ignoraba en played/cancel/skip
+      (IDOR, ahora va dentro del WHERE); `tableId` ahora se valida y se
+      verifica que pertenezca al venue y esté activa
+- [x] P0-4: release del lock de Redis ahora es atómico vía script Lua
+      (antes GET+DEL con ventana de carrera); `calculateJumpPosition` empuja
+      a los pedidos posteriores antes de insertar — antes dos saltos pagados
+      quedaban en la misma posición y se cobraba dos veces el mismo lugar
+- [x] P0-5: `GET /venues/:id` devolvía `bankAccountInfo` y
+      `spotifyAccountId`; ahora usa proyección pública de lista blanca.
+      Precios pasan de `@IsNumber()` a `@IsInt()` (ADR 0006)
+- [x] P0-6: `loginStaff` elegía el rol sin `ORDER BY` — un artista solista
+      (venue_admin + dj en su propio venue) recibía cualquiera de los dos al
+      azar. Ahora ordena por `roleId ASC` (menor id = mayor privilegio)
+- [x] Mensajes de error en español en los DTOs tocados y en `JwtAuthGuard`
+- [x] Catálogo de roles agregado a `schema.sql` — la tabla `roles` estaba
+      VACÍA, así que `loginStaff` no podía resolver ningún rol en una base
+      recién creada. Es data de catálogo, no de prueba: producción también
+      la necesita
+- [x] Datos semilla para pruebas (`src/seed/seed.ts`)
+- [ ] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
+
 ## Épica 1 — Auth + QR (registro progresivo)
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
@@ -33,12 +71,91 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 
 ## Épica 3 — Créditos y pagos
 
-- [ ] Modelo de créditos y transacciones (`payment_method`, saldo)
-- [ ] **Prioridad actual:** carga de créditos en recepción (efectivo/tarjeta), staff busca cliente por teléfono y acredita al instante
+- [x] Modelo de créditos y transacciones (`payment_method`, saldo) — libro
+      mayor inmutable según ADR 0006. Esquema en `schema.sql` + entidades
+      `CreditAccount` y `CreditTransaction`. Reemplaza el modelo original,
+      que con `CHECK (amount > 0)` no podía registrar un solo gasto
+- [x] Acreditación atómica del saldo (Unit of Work) — `CreditsService.
+    applyTransaction()` es la ÚNICA puerta por la que se mueve un
+      crédito. `SELECT ... FOR UPDATE` dentro de una transacción cierra el
+      hueco entre leer y escribir. Probado con 10 cargas concurrentes que
+      deben dejar exactamente 50 créditos
+- [x] Idempotencia (`idempotency_key`) — el doble clic del mesero devuelve
+      el movimiento original en vez de cobrar dos veces. Chequeo en el
+      servicio + restricción UNIQUE de la base como respaldo ante la carrera
+- [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
+      (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
+      instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
+      su DTO y los guards; el motor (`applyTransaction`) ya está
   - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
+- [x] Buscar cliente desde recepción por correo O teléfono
+      (`GET /venues/:venueId/credits/account`) — coincidencia EXACTA, nunca
+      parcial: con `LIKE` cualquier empleado podría pescar los datos de
+      todos los clientes de la plataforma. Proyección de lista blanca
+
+### Identificación del cliente en recepción — código efímero + QR
+
+HALLAZGO que originó esto: `users.phone_number` está vacío para TODOS los
+usuarios y va a seguir así. El registro es por OTP de correo
+(`EmailOtpSender`); nadie escribe nunca esa columna. La búsqueda por
+teléfono existe pero no encuentra a nadie.
+
+Y dictar un correo en un bar con música alta es impracticable.
+
+PRINCIPIO: **el correo es la IDENTIDAD verificada (OTP); el teléfono y el
+código son solo LLAVES DE BÚSQUEDA.** Un teléfono mal escrito no
+contamina nada — por eso no necesita verificación, y por eso NUNCA debe
+usarse para decidir nada de dinero ni de antifraude.
+
+Flujo objetivo: el cliente toca "Cargar créditos", su app muestra un QR
+grande con el código legible debajo y una cuenta regresiva. El mesero
+escanea o teclea, ve nombre y saldo, y carga.
+
+- [ ] Generar código efímero: `POST /venues/:venueId/credits/claim-code`
+      — lo pide el cliente autenticado, devuelve código + segundos de
+      vigencia. Se guarda en REDIS, no en tabla: es efímero por
+      naturaleza y Redis lo borra solo. Es el mismo patrón que ya usa
+      OtpService, reutilizarlo
+- [ ] Alfabeto sin caracteres ambiguos (sin `0/O`, `1/I/L`, `5/S`).
+      6 posiciones sobre 31 caracteres ≈ 900 millones de combinaciones
+- [ ] Vigencia ~3 minutos. El riesgo NO es robo (nadie gana haciéndose
+      pasar por otro para que le carguen crédito a esa otra persona), es
+      CONFUSIÓN: que el mesero escanee la captura de pantalla vieja de
+      otra mesa y cargue al cliente equivocado
+- [ ] UN SOLO USO: se invalida tras una carga exitosa. Sin esto, un
+      segundo mesero podría escanear el mismo código vigente y cobrar dos
+      veces — y la idempotencia NO lo detendría, porque serían dos
+      operaciones con llaves distintas
+- [ ] Amarrado al venue: un código del Bar A no sirve en el Gimnasio B
+- [ ] Rate limiting en el endpoint de canje — 900 millones de
+      combinaciones son muchas, pero no infinitas
+- [ ] SEPARACIÓN DE PRIVILEGIOS (esto es lo que da el control):
+  - Buscar por CÓDIGO → `staff` y `venue_admin`. Operación normal, cien
+    veces por noche. Un mesero puede trabajar todo el turno sin ver jamás
+    el correo de nadie
+  - Buscar por CORREO o TELÉFONO → **solo `venue_admin`**, y se registra
+    en `audit_logs`. Es la vía de excepción: reclamo, código vencido,
+    celular sin batería. Consultar los datos de un cliente pasa a ser un
+    acto excepcional, con responsable y con huella
+- [ ] Frontend (Épica 6): pantalla del cliente con QR + código legible +
+      cuenta regresiva; pantalla de recepción con escáner y campo manual
+- [ ] Captura oportunista del teléfono: el `lookup` ya devuelve
+      `tienePhone`. Cuando exista el frontend, si viene en `false` la
+      pantalla de recepción ofrece capturarlo. Se pide DESPUÉS de que el
+      cliente ya está comprando, no en el registro — cero fricción para
+      quien recién llega, y solo lo dan quienes ya son clientes reales
+- [ ] Post-lanzamiento: evaluar código PERMANENTE de cliente como
+      respaldo del efímero (celular descargado, sin datos)
+
+- [ ] Verificar en la documentación de Meta si Facebook Login puede
+      entregar el teléfono. Si no puede (lo más probable), Facebook
+      resuelve la fricción del registro pero NO el problema de
+      identificación en recepción — el teléfono tiene que capturarse en
+      nuestro flujo, no depender del método de registro
 - [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía `reverses_transaction_id`
 - [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
-- [ ] Acreditación atómica del saldo (Unit of Work)
+      (la columna y el parámetro ya existen; falta exponerlo en el endpoint
+      y en la vista de historial)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
 - [ ] Regla: canción gratis por registro (con control antifraude, usando verificacion de correo) — ya existe `free_song_used` en `users`, falta la lógica de negocio
 - [ ] Expiración de créditos no usados (configurable)
@@ -56,6 +173,45 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
   - Cliente cancela → decisión propia, ya se benefició de la posición
     ganada → NO se reembolsa el salto (`is_paid_jump`); solo se reembolsa
     el costo base de la canción si nunca hubo salto pagado
+
+### Riesgos de base de datos — ordenados por cuánto dolería, no por esfuerzo
+
+Detectados al construir el libro mayor. Son las "sorpresas caras" que no
+avisan: ninguna produce un error hoy.
+
+- [ ] **1. NO HAY RESPALDOS.** Es la única de esta lista que puede matar el
+      negocio. `credit_transactions` es el registro de a quién se le debe
+      cuánto, y el dinero entró en efectivo: no existe rastro externo con
+      el cual reconstruirlo. Si el volumen se pierde (disco, error humano,
+      proveedor), no hay vuelta. Respaldo diario automático DEBE existir
+      antes del 31/ago, no después
+- [ ] **2. `COUNT` que se degrada para siempre.** `queue.service.ts` corre
+      `historyRepository.count({ where: { venueId } })` en cada salto
+      pagado y en cada `registerJump`. Postgres no guarda un contador:
+      recorre las filas. Un bar activo genera ~100k filas al año, y esa
+      consulta se hace más lenta linealmente. No falla nunca — solo un
+      sábado el salto tarda dos segundos y "el sistema está lento".
+      Arreglar con un contador incremental por venue
+- [ ] **3. Interbloqueos — llegan en el PR de cobros.** Hoy se bloquea UNA
+      fila por transacción, así que es imposible. Pero pedir una canción va
+      a tocar dos recursos: la cuenta de créditos y las posiciones de cola.
+      REGLA A FIJAR ANTES DE ESCRIBIR ESE CÓDIGO: siempre en el mismo
+      orden, primero el crédito y después la cola (si no hay saldo, no
+      vale la pena tocar posiciones)
+- [ ] **4. Pool de conexiones.** TypeORM abre ~10 conexiones por instancia;
+      Postgres acepta ~100 por defecto. Con una instancia sobra; con varias
+      detrás de un balanceador se multiplica hasta que la app no puede
+      conectarse. Se define al desplegar, junto con el proveedor
+- [ ] **5. Verificación diaria de la invariante en TODAS las cuentas.**
+      `verifyIntegrity` valida una sola. En producción hace falta un job
+      que recorra todas y avise. Debe devolver SIEMPRE cero filas:
+      `sql
+    SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
+      FROM credit_accounts ca
+      LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
+     GROUP BY ca.id, ca.balance
+    HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
+    `
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -80,6 +236,36 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Regla anti-acoso: alerta si una mesa recibe muchas dedicatorias de la misma persona
 
 ## Épica 6 — Panel Admin / DJ
+
+### Gestión de personal y roles — HUECO ACTUAL
+
+HALLAZGO: hoy NO existe ninguna forma de crear personal ni de asignar
+roles que no sea SQL a mano contra la base. Un `venue_admin` no puede dar
+de alta a su propio DJ ni a un mesero. Todo el sistema de roles
+(`user_venue_roles`, `RolesGuard`, `VenueRolesGuard`) está construido y
+funcionando, pero no hay puerta para administrarlo.
+
+Consecuencia práctica: cada local nuevo requiere que alguien con acceso a
+Postgres cree las cuentas. No escala más allá de los primeros clientes, y
+es la razón por la que hoy los roles se asignan en el seed.
+
+- [ ] `POST /venues/:venueId/staff` — el `venue_admin` da de alta a su
+      personal (correo + rol). Genera contraseña temporal o invitación
+      por correo
+- [ ] `GET /venues/:venueId/staff` — lista del personal del local con su
+      rol. Solo del local propio, nunca de otros
+- [ ] `PATCH /venues/:venueId/staff/:userId/role` — cambiar el rol de
+      alguien. Con regla: un `venue_admin` NO puede crear otro
+      `venue_admin` ni auto-degradarse (si no, un local puede quedarse
+      sin administrador)
+- [ ] `DELETE /venues/:venueId/staff/:userId` — quitar el acceso.
+      Borra la fila de `user_venue_roles`, NUNCA el usuario: puede tener
+      movimientos de crédito asociados
+- [ ] Un `venue_admin` solo puede asignar roles de MENOR privilegio que
+      el suyo (`dj`, `staff`). Crear `venue_admin` es del `super_admin`
+- [ ] Toda alta, baja y cambio de rol se registra en `audit_logs` — es
+      cambio de permisos sobre un sistema que maneja dinero
+- [ ] Pantalla de gestión de personal en el panel del admin
 
 - [ ] Dashboard con métricas (cola, créditos vendidos, mesas activas)
 - [ ] Vista de cola en vivo con acciones (play/skip)
@@ -116,13 +302,7 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
       ESE día, en ESA máquina, porque alguien la corrió. No es durable:
       nadie va a volver a pegar cinco comandos después de cada cambio.
       Una prueba solo vale si corre sola.
-      Casos a cubrir (uno por cada `curl` ejecutado):
-        1. `venue_admin` cambia precios de SU local → 200
-        2. `venue_admin` cambia precios de local AJENO → 403
-        3. Precio con centavos (4.5) → 400
-        4. `venue_admin` crea mesa en local AJENO → 403
-        5. `super_admin` toca local ajeno → 200
-        6. Campo no declarado en el body (`isAdmin`) → 400
+      Casos a cubrir (uno por cada `curl` ejecutado): 1. `venue_admin` cambia precios de SU local → 200 2. `venue_admin` cambia precios de local AJENO → 403 3. Precio con centavos (4.5) → 400 4. `venue_admin` crea mesa en local AJENO → 403 5. `super_admin` toca local ajeno → 200 6. Campo no declarado en el body (`isAdmin`) → 400
       Requiere: el seed corriendo antes de la suite, y que GitHub Actions
       la ejecute en cada PR. Sin el paso de CI, la prueba existe pero
       nadie se entera cuando falla
@@ -183,44 +363,6 @@ Este backlog está listo para copiarse como Issues en GitHub Projects. Cada hist
 - [ ] Vista de facturación: créditos emitidos por venue y por mes,
       derivada del ledger. Insumo para decidir el modelo de precios
       después del piloto.
-
-## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
-
-Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
-dinero real a `venue.queueJumpPrice`, a `skipRequest` y a las posiciones de
-cola. Los tres tenían vulnerabilidades explotables. Rama:
-`chore/hardening-pre-epica-3`.
-
-- [x] P0-1: `ValidationPipe` global con `whitelist` + `forbidNonWhitelisted`.
-      Antes NO existía: todos los decoradores de class-validator del proyecto
-      eran inertes y había mass assignment abierto en `repository.create(dto)`
-- [x] P0-2: `VenueRolesGuard` — resuelve el rol del usuario EN EL VENUE DE
-      LA RUTA contra `user_venue_roles`, en vez de leer el `role` del JWT.
-      `RolesGuard` solo comparaba el nombre del rol, así que un `venue_admin`
-      del Bar A podía administrar el Bar B. Aplicado a los 6 endpoints de
-      `VenuesController`
-- [x] P0-3: guards y pertenencia en `QueueController` — `played` estaba sin
-      guard; `skip` exigía JWT pero no rol (habría permitido forzar reembolsos
-      en Épica 3); el `venueId` de la ruta se ignoraba en played/cancel/skip
-      (IDOR, ahora va dentro del WHERE); `tableId` ahora se valida y se
-      verifica que pertenezca al venue y esté activa
-- [x] P0-4: release del lock de Redis ahora es atómico vía script Lua
-      (antes GET+DEL con ventana de carrera); `calculateJumpPosition` empuja
-      a los pedidos posteriores antes de insertar — antes dos saltos pagados
-      quedaban en la misma posición y se cobraba dos veces el mismo lugar
-- [x] P0-5: `GET /venues/:id` devolvía `bankAccountInfo` y
-      `spotifyAccountId`; ahora usa proyección pública de lista blanca.
-      Precios pasan de `@IsNumber()` a `@IsInt()` (ADR 0006)
-- [x] P0-6: `loginStaff` elegía el rol sin `ORDER BY` — un artista solista
-      (venue_admin + dj en su propio venue) recibía cualquiera de los dos al
-      azar. Ahora ordena por `roleId ASC` (menor id = mayor privilegio)
-- [x] Mensajes de error en español en los DTOs tocados y en `JwtAuthGuard`
-- [x] Catálogo de roles agregado a `schema.sql` — la tabla `roles` estaba
-      VACÍA, así que `loginStaff` no podía resolver ningún rol en una base
-      recién creada. Es data de catálogo, no de prueba: producción también
-      la necesita
-- [x] Datos semilla para pruebas (`src/seed/seed.ts`)
-- [ ] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
 
 ### Hallazgos nuevos, diferidos
 

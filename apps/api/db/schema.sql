@@ -15,15 +15,28 @@ CREATE TABLE venues (
     playlist_mode   VARCHAR(20) NOT NULL DEFAULT 'free' CHECK (playlist_mode IN ('free', 'curated')),
     playback_mode   VARCHAR(20) NOT NULL DEFAULT 'spotify_managed' CHECK (playback_mode IN ('spotify_managed', 'dj_manual')), -- con DJ en vivo, no requiere Spotify
     cooldown_hours  INT NOT NULL DEFAULT 3,          -- horas antes de repetir una canción
+    song_price      NUMERIC(10,2) NOT NULL DEFAULT 1.00,   -- costo base de pedir una canción (Q1)
     queue_jump_price NUMERIC(10,2) NOT NULL DEFAULT 5.00,
     dedication_price NUMERIC(10,2) NOT NULL DEFAULT 3.00,
     combo_jump_dedication_price NUMERIC(10,2) NOT NULL DEFAULT 7.00, -- precio fijo de paquete (marketing), independiente de la suma de los dos anteriores
+    credit_expiry_months INT NOT NULL DEFAULT 3 CHECK (credit_expiry_months > 0), -- expiración por INACTIVIDAD de la cuenta (ADR 0006)
     bank_account_info JSONB,                          -- datos para transferencias directas
     spotify_account_id UUID,                          -- cuenta Spotify Premium vinculada al local
     is_active       BOOLEAN NOT NULL DEFAULT true,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Los precios se cobran en créditos ENTEROS (1 crédito = Q1), ver ADR 0006.
+    -- Si el negocio algún día necesita centavos, primero hay que rediseñar la
+    -- unidad del saldo. Reemplaza el ALTER TABLE que se corrió a mano y nunca
+    -- llegó al archivo.
+    CONSTRAINT venues_prices_are_whole_credits CHECK (
+        song_price                  = trunc(song_price) AND
+        queue_jump_price            = trunc(queue_jump_price) AND
+        dedication_price            = trunc(dedication_price) AND
+        combo_jump_dedication_price = trunc(combo_jump_dedication_price)
+    )
+);  
 
 CREATE TABLE tables (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -44,14 +57,16 @@ CREATE TABLE users (
     phone_number    VARCHAR(20) UNIQUE,                -- identidad principal, verificada por OTP
     email           VARCHAR(150) UNIQUE,
     display_name    VARCHAR(80),
+    password_hash   VARCHAR(255),                      -- SOLO staff/admin/DJ; los clientes entran por OTP y lo tienen NULL
     is_phone_verified BOOLEAN NOT NULL DEFAULT false,
     is_email_verified BOOLEAN NOT NULL DEFAULT false,
     free_song_used  BOOLEAN NOT NULL DEFAULT false,     -- controla la canción gratis por registro
     marketing_opt_in BOOLEAN NOT NULL DEFAULT false,
+    terms_version_accepted VARCHAR(20),                 -- qué versión de T&C aceptó ESTE usuario
+    terms_accepted_at      TIMESTAMPTZ,                 -- y cuándo — sin esto no se puede sostener una auditoría (ADR 0006)
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE TABLE roles (
     id      SERIAL PRIMARY KEY,
     name    VARCHAR(30) NOT NULL UNIQUE  -- 'super_admin', 'venue_admin', 'dj', 'staff', 'customer' (staff = mesero/recepcion, puede cargar creditos)
@@ -97,35 +112,6 @@ CREATE TABLE table_sessions (
 );
 
 -- ------------------------------------------------------------
--- Créditos y pagos
--- ------------------------------------------------------------
-
-CREATE TABLE credit_accounts (
-    user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    balance         NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE credit_transactions (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id         UUID NOT NULL REFERENCES users(id),
-    venue_id        UUID NOT NULL REFERENCES venues(id),
-    amount          NUMERIC(10,2) NOT NULL CHECK (amount > 0),
-    payment_method  VARCHAR(20) NOT NULL DEFAULT 'efectivo_recepcion'
-                        CHECK (payment_method IN ('efectivo_recepcion', 'tarjeta_recepcion', 'transferencia_directa')), -- transferencia_directa en pausa por ahora
-    status          VARCHAR(20) NOT NULL DEFAULT 'confirmed'
-                        CHECK (status IN ('pending', 'in_review', 'confirmed', 'rejected')), -- efectivo/tarjeta en recepcion nace 'confirmed' (no hay espera)
-    bank_reference  VARCHAR(100),                       -- solo aplica si payment_method = transferencia_directa
-    receipt_url     TEXT,                                -- solo aplica si payment_method = transferencia_directa
-    created_by_staff_id UUID REFERENCES users(id),        -- staff/admin que registro la carga en recepcion (auditoria)
-    reviewed_by     UUID REFERENCES users(id),            -- admin del local que confirmo (solo aplica a transferencia_directa)
-    reviewed_at     TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_credit_transactions_staff_audit ON credit_transactions (created_by_staff_id, created_at);
-
--- ------------------------------------------------------------
 -- Catálogo de canciones e historial (para el cooldown)
 -- ------------------------------------------------------------
 
@@ -139,6 +125,8 @@ CREATE TABLE songs (
     UNIQUE (provider, provider_track_id)
 );
 
+
+
 CREATE TABLE venue_song_history (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     venue_id        UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
@@ -146,7 +134,7 @@ CREATE TABLE venue_song_history (
     played_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_venue_song_history_lookup ON venue_song_history (venue_id, song_id, played_at);
+
 
 -- ------------------------------------------------------------
 -- Cola de pedidos
@@ -182,6 +170,116 @@ CREATE TABLE queue_jumps (
 );
 
 CREATE INDEX idx_queue_jumps_rate_limit ON queue_jumps (user_id, venue_id, jumped_at);
+
+-- ------------------------------------------------------------
+-- Créditos y pagos
+-- ------------------------------------------------------------
+
+-- Saldo de un cliente EN UN VENUE específico. Un cliente que visita tres
+-- locales tiene TRES cuentas separadas: el crédito pertenece al dueño del
+-- venue donde se compró (ADR 0004) y no viaja entre negocios.
+CREATE TABLE credit_accounts (
+    id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    venue_id          UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+
+    -- Saldo en créditos ENTEROS (1 crédito = Q1).
+    -- Esto es CACHÉ, no la verdad. La verdad es SUM(amount) del ledger.
+    balance           INTEGER NOT NULL DEFAULT 0,
+
+    -- Para la expiración por inactividad (ADR 0006).
+    last_activity_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT credit_accounts_user_venue_unique UNIQUE (user_id, venue_id),
+
+    -- Red de seguridad: si un bug intenta dejar el saldo negativo, la
+    -- transacción revienta en vez de corromper el dato en silencio.
+    CONSTRAINT credit_accounts_balance_non_negative CHECK (balance >= 0)
+);
+
+CREATE INDEX idx_credit_accounts_venue ON credit_accounts (venue_id);
+
+-- Índice PARCIAL: al job de expiración solo le importan las cuentas con
+-- saldo. Las de saldo 0 ni siquiera entran al índice.
+CREATE INDEX idx_credit_accounts_inactive
+    ON credit_accounts (last_activity_at) WHERE balance > 0;
+
+
+-- Libro mayor. APPEND-ONLY: nunca UPDATE ni DELETE sobre esta tabla.
+-- Corregir un error es INSERTAR una fila reversa (ADR 0006).
+CREATE TABLE credit_transactions (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    credit_account_id       UUID NOT NULL REFERENCES credit_accounts(id),
+
+    type                    VARCHAR(20) NOT NULL CHECK (type IN (
+                                'topup_manual', 'topup_gateway', 'grant_free_song',
+                                'charge_song', 'charge_jump', 'charge_dedication',
+                                'refund', 'reversal', 'expiration')),
+
+    -- CON SIGNO: positivo entra, negativo sale.
+    -- Invariante del sistema: SUM(amount) = credit_accounts.balance
+    amount                  INTEGER NOT NULL,
+
+    -- Foto del saldo justo después de este movimiento.
+    balance_after           INTEGER NOT NULL,
+
+    -- Solo en recargas. Se conservan los valores en español que ya existían.
+    payment_method          VARCHAR(25) CHECK (payment_method IN (
+                                'efectivo_recepcion', 'tarjeta_recepcion',
+                                'transferencia_directa', 'recurrente')),
+
+    -- Quetzales reales recibidos en caja. NUMERIC porque es dinero de
+    -- verdad y puede llevar centavos; el crédito no.
+    cash_amount             NUMERIC(10,2),
+
+    created_by_staff_id     UUID REFERENCES users(id),              -- auditoría de la carga
+    reverses_transaction_id UUID REFERENCES credit_transactions(id), -- nota de crédito
+    queue_request_id        UUID REFERENCES queue_requests(id),      -- traza el cobro al pedido
+    expires_at              TIMESTAMPTZ,                             -- hoy sin uso; preserva el camino a lotes FIFO
+    idempotency_key         VARCHAR(100),                            -- antifraude de doble clic
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT credit_transactions_amount_not_zero CHECK (amount <> 0),
+    CONSTRAINT credit_transactions_balance_after_non_negative CHECK (balance_after >= 0),
+    -- En Postgres los NULL no chocan en un UNIQUE: solo restringe las filas
+    -- que SÍ traen llave de idempotencia.
+    CONSTRAINT credit_transactions_idempotency_unique UNIQUE (idempotency_key),
+    CONSTRAINT credit_transactions_no_self_reversal CHECK (reverses_transaction_id <> id)
+);
+
+-- Consulta principal: historial de una cuenta, más reciente primero.
+CREATE INDEX idx_credit_transactions_account_created
+    ON credit_transactions (credit_account_id, created_at DESC);
+
+-- "Qué cobros generó este pedido" — necesario para reembolsar.
+CREATE INDEX idx_credit_transactions_queue_request
+    ON credit_transactions (queue_request_id) WHERE queue_request_id IS NOT NULL;
+
+-- Auditoría: qué cargó este empleado en su turno.
+CREATE INDEX idx_credit_transactions_staff_audit
+    ON credit_transactions (created_by_staff_id, created_at DESC)
+    WHERE created_by_staff_id IS NOT NULL;
+
+
+-- Inmutabilidad forzada por la BASE DE DATOS, no por disciplina del equipo.
+-- La regla deja de depender de que todos la recuerden.
+CREATE OR REPLACE FUNCTION reject_credit_transaction_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION
+        'credit_transactions es append-only: % no permitido. Para corregir, inserte una transacción reversa.', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_credit_transactions_immutable
+    BEFORE UPDATE OR DELETE ON credit_transactions
+    FOR EACH ROW EXECUTE FUNCTION reject_credit_transaction_mutation();
+
+CREATE INDEX idx_venue_song_history_lookup ON venue_song_history (venue_id, song_id, played_at);
+
 
 -- ------------------------------------------------------------
 -- Dedicatorias

@@ -49,6 +49,20 @@ export class User {
 
   @Column({ name: 'marketing_opt_in', default: false })
   marketingOptIn!: boolean;
+  // Qué versión de los términos aceptó ESTE usuario, y cuándo. No basta
+  // con tener los términos publicados: ante una auditoría hay que poder
+  // demostrar qué política aceptó cada cliente, sobre todo la de
+  // expiración de créditos (ADR 0006).
+  @Column({
+    name: 'terms_version_accepted',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+  })
+  termsVersionAccepted!: string | null;
+
+  @Column({ name: 'terms_accepted_at', type: 'timestamptz', nullable: true })
+  termsAcceptedAt!: Date | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;

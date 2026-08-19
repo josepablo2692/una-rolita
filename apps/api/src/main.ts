@@ -1,42 +1,15 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, BadRequestException } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { setupApp } from './common/setup-app';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // ------------------------------------------------------------
-  // ValidationPipe GLOBAL. Sin esto, los decoradores de
-  // class-validator (@IsString, @MaxLength, etc.) de TODOS los DTOs
-  // del proyecto no se ejecutan nunca — son solo anotaciones.
-  // ------------------------------------------------------------
-  // apps/api/src/main.ts
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: { enableImplicitConversion: false },
-      // Traduce el mensaje de propiedades no permitidas, que el pipe
-      // genera internamente en inglés.
-      validationError: { target: false, value: false },
-      exceptionFactory: (errors) => {
-        const mensajes = errors.flatMap((e) =>
-          Object.values(e.constraints ?? {}).map((m) =>
-            m.startsWith('property ') && m.endsWith('should not exist')
-              ? `El campo "${e.property}" no está permitido`
-              : m,
-          ),
-        );
-        return new BadRequestException({
-          statusCode: 400,
-          error: 'Solicitud inválida',
-          message: mensajes,
-        });
-      },
-    }),
-  );
+  // Misma configuración que usan las pruebas e2e. Si cambia algo global,
+  // cambia en setup-app.ts y ambos entornos quedan alineados solos.
+  setupApp(app);
+
   const config = new DocumentBuilder()
     .setTitle('Una Rolita API')
     .setDescription('API de la rocola digital para bares, gimnasios y clubes')
@@ -49,4 +22,8 @@ async function bootstrap() {
 
   await app.listen(process.env.PORT ?? 3000);
 }
-bootstrap();
+
+// `void` marca explícitamente que no esperamos la promesa — es el punto de
+// entrada, no hay nadie arriba que la pueda await. Quita la advertencia de
+// no-floating-promises que hoy sale en el lint.
+void bootstrap();
