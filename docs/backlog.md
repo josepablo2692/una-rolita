@@ -2,6 +2,15 @@
 
 Este backlog está listo para copiarse como Issues en GitHub Projects. Cada historia se puede crear como un Issue individual, etiquetado con su épica.
 
+> **Este documento es el PLAN DE ENTREGA: lo que se construye, en orden,
+> con fecha.** Las ideas de producto que todavía no son plan viven en
+> `docs/VISION.md` — el artista móvil ("el Uber de las canciones"),
+> alertas por cercanía, y cobro recurrente de membresías.
+>
+> Están separadas a propósito: cuando la visión vive dentro del backlog,
+> todo empieza a parecer urgente y se pierde el hilo de lo que hay que
+> entregar. Nada de `VISION.md` se construye antes del lanzamiento.
+
 ## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
 
 Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
@@ -64,8 +73,8 @@ nosotros**, así que hay que arrancarlas con anticipación, no la semana
 del lanzamiento.
 
 - [ ] **Publicar la app de Google OAuth** (sacarla de modo "Testing" en
-      Google Cloud Console). Hoy solo los correos agregados como *test
-      users* pueden entrar con "Continuar con Google"; cualquier cliente
+      Google Cloud Console). Hoy solo los correos agregados como _test
+      users_ pueden entrar con "Continuar con Google"; cualquier cliente
       real de un bar sería rechazado **por Google, no por nuestro código**.
       El proceso de verificación puede pedir política de privacidad
       pública, términos de uso y una pantalla de consentimiento revisada.
@@ -100,18 +109,14 @@ del lanzamiento.
       `CreditAccount` y `CreditTransaction`. Reemplaza el modelo original,
       que con `CHECK (amount > 0)` no podía registrar un solo gasto
 - [x] Acreditación atómica del saldo (Unit of Work) — `CreditsService.
-    applyTransaction()` es la ÚNICA puerta por la que se mueve un
+applyTransaction()` es la ÚNICA puerta por la que se mueve un
       crédito. `SELECT ... FOR UPDATE` dentro de una transacción cierra el
       hueco entre leer y escribir. Probado con 10 cargas concurrentes que
       deben dejar exactamente 50 créditos
 - [x] Idempotencia (`idempotency_key`) — el doble clic del mesero devuelve
       el movimiento original en vez de cobrar dos veces. Chequeo en el
       servicio + restricción UNIQUE de la base como respaldo ante la carrera
-- [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
-      (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
-      instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
-      su DTO y los guards; el motor (`applyTransaction`) ya está
-  - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
+
 - [x] Buscar cliente desde recepción por correo O teléfono
       (`GET /venues/:venueId/credits/account`) — coincidencia EXACTA, nunca
       parcial: con `LIKE` cualquier empleado podría pescar los datos de
@@ -181,6 +186,35 @@ escanea o teclea, ve nombre y saldo, y carga.
       (la columna y el parámetro ya existen; falta exponerlo en el endpoint
       y en la vista de historial)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
+
+MODELO DE PRECIOS CONFIRMADO — los precios son TOTALES POR PRODUCTO, no
+componentes que se suman. Cada forma de pedir ya incluye la canción:
+`song_price` Q1 = la canción · `queue_jump_price` Q5 = canción + salto ·
+`dedication_price` Q3 = canción + dedicatoria · combo Q7 = las tres cosas.
+
+La prueba está en el `−1` de la fórmula: no es un descuento arbitrario,
+es el precio de la canción que estaba contado dos veces (5 + 3 contaría
+la canción dos veces; el −1 la quita). Descompuesto: canción 1 + salto 4
++ dedicatoria 2 = 7.
+
+PRINCIPIO: **el precio que el admin configura es el precio que el cliente
+paga.** Ninguna aritmética entre lo que el dueño escribe y lo que se
+cobra, o el admin va a jurar que puso otro precio — y va a tener razón.
+
+Consecuencia para el cobro: **un pedido genera UN renglón en el libro
+mayor**, tipado según qué producto se vendió (`charge_song`,
+`charge_jump`, `charge_dedication`, `charge_combo`). No se parte en
+componentes: eso inventaría un "ingreso por salto de Q4" que no existe
+en ningún precio publicado.
+
+- [ ] Agregar `charge_combo` al catálogo de tipos de `credit_transactions`
+      (CHECK del esquema + union type de la entidad) cuando llegue Épica 5.
+      Hoy no hace falta: sin dedicatorias no se puede pedir un combo
+- [ ] Revisar la fórmula del combo cuando los precios escalen. El `−1` es
+      un descuento FIJO: con salto Q5 y dedicatoria Q3 representa 12% y
+      motiva; con salto Q10 y dedicatoria Q6 sería 6% y probablemente ya
+      no mueva a nadie. El campo es override manual, así que el admin
+      puede corregirlo — pero la sugerencia automática debería revisarse
 - [ ] Regla: canción gratis por registro (con control antifraude, usando verificacion de correo) — ya existe `free_song_used` en `users`, falta la lógica de negocio
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
@@ -194,6 +228,11 @@ escanea o teclea, ve nombre y saldo, y carga.
       no según qué se cobró.
   - Artista/DJ salta el pedido → el servicio nunca se entregó por decisión
     del local → reembolso TOTAL (canción + salto + dedicatoria)
+- [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
+      (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
+      instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
+      su DTO y los guards; el motor (`applyTransaction`) ya está
+  - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
   - Cliente cancela → decisión propia, ya se benefició de la posición
     ganada → NO se reembolsa el salto (`is_paid_jump`); solo se reembolsa
     el costo base de la canción si nunca hubo salto pagado
@@ -230,12 +269,12 @@ avisan: ninguna produce un error hoy.
       `verifyIntegrity` valida una sola. En producción hace falta un job
       que recorra todas y avise. Debe devolver SIEMPRE cero filas:
       `sql
-    SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
-      FROM credit_accounts ca
-      LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
-     GROUP BY ca.id, ca.balance
-    HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
-    `
+SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
+  FROM credit_accounts ca
+  LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
+ GROUP BY ca.id, ca.balance
+HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
+`
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
