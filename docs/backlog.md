@@ -195,7 +195,8 @@ componentes que se suman. Cada forma de pedir ya incluye la canción:
 La prueba está en el `−1` de la fórmula: no es un descuento arbitrario,
 es el precio de la canción que estaba contado dos veces (5 + 3 contaría
 la canción dos veces; el −1 la quita). Descompuesto: canción 1 + salto 4
-+ dedicatoria 2 = 7.
+
+- dedicatoria 2 = 7.
 
 PRINCIPIO: **el precio que el admin configura es el precio que el cliente
 paga.** Ninguna aritmética entre lo que el dueño escribe y lo que se
@@ -215,7 +216,13 @@ en ningún precio publicado.
       motiva; con salto Q10 y dedicatoria Q6 sería 6% y probablemente ya
       no mueva a nadie. El campo es override manual, así que el admin
       puede corregirlo — pero la sugerencia automática debería revisarse
-- [ ] Regla: canción gratis por registro (con control antifraude, usando verificacion de correo) — ya existe `free_song_used` en `users`, falta la lógica de negocio
+- [x] Regla: canción gratis por registro, con antifraude por correo
+      verificado. Es UNA por persona en toda la plataforma (vive en
+      `users`), no una por local — si viviera en `credit_accounts`,
+      alguien sacaría una gratis en cada bar con la misma cuenta.
+      Se registra como DOS renglones (`grant_free_song` +1 y
+      `charge_song` −1): suman cero, pero la promoción queda escrita y
+      se puede contar. Omitir el cobro la habría vuelto invisible
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
 - [ ] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
@@ -223,7 +230,16 @@ en ningún precio publicado.
 - [ ] Toggle "modo artista" en configuración del venue — redirige propinas al artista contratado esa noche
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
-- [ ] Lógica de freeSongUsed en queue.service.createRequest — leer/voltear el booleano ANTES de cobrar, con lock para evitar doble uso concurrente (depende de Épica 3, sistema de créditos)
+- [x] Lógica de freeSongUsed en `queue.service.createRequest` — la fila de
+      `users` se bloquea con `pessimistic_write` dentro de la misma
+      transacción, para que dos pedidos simultáneos no usen la gratis dos
+      veces
+- [x] Cobro al pedir canción — `createRequest` cobra y encola dentro de UNA
+      transacción. Orden de bloqueo respetado: primero el crédito, después
+      la cola. Si no alcanza el saldo, ni se tocan las posiciones
+- [x] Aviso por WebSocket movido DESPUÉS del commit — notificar dentro de
+      la transacción mostraría en la pantalla del DJ una canción que quizá
+      nunca se confirme
 - [ ] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
       no según qué se cobró.
   - Artista/DJ salta el pedido → el servicio nunca se entregó por decisión
@@ -270,8 +286,8 @@ avisan: ninguna produce un error hoy.
       que recorra todas y avise. Debe devolver SIEMPRE cero filas:
       `sql
 SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
-  FROM credit_accounts ca
-  LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
+FROM credit_accounts ca
+LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
  GROUP BY ca.id, ca.balance
 HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
 `
@@ -297,6 +313,22 @@ HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
 - [ ] Panel del DJ: aprobar/rechazar antes de que se lea
 - [ ] Opción de lectura por DJ o por sintetizador de voz
 - [ ] Regla anti-acoso: alerta si una mesa recibe muchas dedicatorias de la misma persona
+- [ ] Caso "cantante en vivo": `delivery_method` ya tiene `dj_voice`,
+      `synth_voice` y `screen_only`, pero en un local de música en vivo no
+      hay DJ. Evaluar renombrar a `live_voice` o agregar `artist_voice`
+- [ ] **UX del aviso al artista — REQUIERE ESTUDIO, no improvisar.**
+      El artista tiene que enterarse de que la canción que está sonando
+      lleva dedicatoria, y el aviso debe SEGUIR VISIBLE mientras dure la
+      canción (la dice cuando pueda, no cuando el sistema quiera).
+      Restricciones duras: - No puede estorbar la acción principal, que es saltar canciones.
+      Un artista tocando no puede pelear con la pantalla - Se ve de lejos y de reojo, a veces con luces encima - Son dos pantallas distintas con necesidades distintas: la TV que
+      ve el público y el dispositivo que ve el artista
+      Un modal bloqueante está descartado de entrada. Explorar: franja
+      fija en un borde, indicador en la fila de la cola que se expande al
+      tocarlo, o zona reservada permanente que no se mueve
+- [ ] Definir qué pasa si la canción termina y el artista nunca leyó la
+      dedicatoria. ¿Se marca como no entregada? ¿Aplica la regla de
+      reembolso de ADR 0006 — incumplió el local?
 
 ## Épica 6 — Panel Admin / DJ
 
