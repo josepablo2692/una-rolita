@@ -31,5 +31,22 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-argument': 'warn',
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
+  },{
+    // Las pruebas trabajan contra respuestas HTTP reales, que son `any`
+    // por naturaleza: supertest no puede saber qué devuelve el servidor.
+    // Tiparlas significaría duplicar el contrato de la API dentro de la
+    // prueba — y si esa copia queda desactualizada, la prueba pasa en
+    // verde mientras el servidor devuelve otra cosa.
+    //
+    // Las reglas no-unsafe-* existen para impedir que `any` se filtre a
+    // la lógica de producción. En el borde HTTP de una prueba no cumplen
+    // esa función, así que se apagan SOLO aquí.
+    files: ['test/**/*.ts', 'src/**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+    },
   },
 );

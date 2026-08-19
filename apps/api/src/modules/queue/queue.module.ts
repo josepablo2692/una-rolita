@@ -11,6 +11,7 @@ import { RedisModule } from '../../redis/redis.module';
 import { QueueController } from './queue.controller';
 import { QueueService } from './queue.service';
 import { QueueGateway } from './queue.gateway';
+import { CreditsModule } from '../credits/credits.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { QueueGateway } from './queue.gateway';
     AuthorizationModule,
     // El lock distribuido (Redlock) que evita que dos personas paguen
     // por la misma posición de cola al mismo tiempo.
+    CreditsModule,
     RedisModule,
   ],
   controllers: [QueueController],

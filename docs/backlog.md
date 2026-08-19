@@ -2,6 +2,15 @@
 
 Este backlog está listo para copiarse como Issues en GitHub Projects. Cada historia se puede crear como un Issue individual, etiquetado con su épica.
 
+> **Este documento es el PLAN DE ENTREGA: lo que se construye, en orden,
+> con fecha.** Las ideas de producto que todavía no son plan viven en
+> `docs/VISION.md` — el artista móvil ("el Uber de las canciones"),
+> alertas por cercanía, y cobro recurrente de membresías.
+>
+> Están separadas a propósito: cuando la visión vive dentro del backlog,
+> todo empieza a parecer urgente y se pierde el hilo de lo que hay que
+> entregar. Nada de `VISION.md` se construye antes del lanzamiento.
+
 ## Fase 0 — Blindaje previo a Épica 3 (fuerza mayor) — COMPLETA
 
 Desviación deliberada del orden del backlog. Justificación: Épica 3 conecta
@@ -44,16 +53,40 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
 - [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
-- [x] Endpoint: registro con verificación OTP por email (Redis + Mailtrap, arquitectura vía OtpSender/OTP_SENDER)
+- [x] Endpoint: registro con verificación OTP por email (Redis + SMTP genérico vía nodemailer, arquitectura vía OtpSender/OTP_SENDER — el proveedor se decide en el `.env`, no en el código)
 - [x] Upgrade de sesión de mesa a usuario autenticado (`POST /auth/upgrade`)
 - [x] JWT de acceso (8 horas) — JwtStrategy + JwtAuthGuard
 - [x] Refresh token — revocación individual y total vía Redis (jti por sesión + set por usuario, TTL 7 días)
 - [x] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
 - [x] Guard de roles (`RolesGuard` + `@Roles()`)
-- [x] OAuth con Google (y opcionalmente Facebook) como alternativa de bajo-fricción al OTP por correo — PRIORIDAD antes de iniciar Épica 3
+- [x] OAuth con Google como alternativa de bajo-fricción al OTP por correo — CÓDIGO completo y probado con cuenta real. ⚠️ NO está listo para producción: la app sigue en modo "Testing" en Google Cloud Console. Ver "Dependencias externas" abajo
 - [x] deviceFingerprint: columna + DTO + Service listos para recibirlo (backend)
 - [ ] deviceFingerprint: generación real en frontend (fingerprintjs o similar) — pendiente hasta que exista frontend
 - [ ] OAuth con Facebook — APLAZADO: bloqueado en configuración de Facebook for Developers (no en código). Falta: crear la app, agregar producto "Facebook Login", configurar callback URL, y copiar App ID/Secret al .env. Una vez con las credenciales, el código es copia del patrón de GoogleStrategy (mismo archivo, misma estructura) — no debería tomar más de 15-20 min una vez resuelto el lado de Facebook.
+
+### Dependencias externas que bloquean producción (no son código)
+
+Las tres son configuración fuera de NestJS. El código está terminado y
+probado en los tres casos; lo que falta es trámite con terceros. Se
+agrupan aquí porque comparten un riesgo: **son lentas y no dependen de
+nosotros**, así que hay que arrancarlas con anticipación, no la semana
+del lanzamiento.
+
+- [ ] **Publicar la app de Google OAuth** (sacarla de modo "Testing" en
+      Google Cloud Console). Hoy solo los correos agregados como _test
+      users_ pueden entrar con "Continuar con Google"; cualquier cliente
+      real de un bar sería rechazado **por Google, no por nuestro código**.
+      El proceso de verificación puede pedir política de privacidad
+      pública, términos de uso y una pantalla de consentimiento revisada.
+      Es la diferencia entre "probado por mí" y "funciona para cualquiera"
+- [ ] **Definir proveedor de correo transaccional para producción.**
+      `EmailOtpSender` usa SMTP genérico, así que cambiar de proveedor es
+      solo tocar el `.env` — ningún cambio de código. Pero hay que
+      verificar límites de envío diario y reputación de entrega: un OTP
+      que cae en spam es un cliente que no puede registrarse. Los
+      proveedores de correo personal no están pensados para volumen
+      transaccional
+- [ ] OAuth con Facebook (ver arriba) — misma categoría: trámite externo
 
 ## Épica 2 — Cola de pedidos
 
@@ -76,18 +109,14 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
       `CreditAccount` y `CreditTransaction`. Reemplaza el modelo original,
       que con `CHECK (amount > 0)` no podía registrar un solo gasto
 - [x] Acreditación atómica del saldo (Unit of Work) — `CreditsService.
-    applyTransaction()` es la ÚNICA puerta por la que se mueve un
+applyTransaction()` es la ÚNICA puerta por la que se mueve un
       crédito. `SELECT ... FOR UPDATE` dentro de una transacción cierra el
       hueco entre leer y escribir. Probado con 10 cargas concurrentes que
       deben dejar exactamente 50 créditos
 - [x] Idempotencia (`idempotency_key`) — el doble clic del mesero devuelve
       el movimiento original en vez de cobrar dos veces. Chequeo en el
       servicio + restricción UNIQUE de la base como respaldo ante la carrera
-- [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
-      (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
-      instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
-      su DTO y los guards; el motor (`applyTransaction`) ya está
-  - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
+
 - [x] Buscar cliente desde recepción por correo O teléfono
       (`GET /venues/:venueId/credits/account`) — coincidencia EXACTA, nunca
       parcial: con `LIKE` cualquier empleado podría pescar los datos de
@@ -157,19 +186,78 @@ escanea o teclea, ve nombre y saldo, y carga.
       (la columna y el parámetro ya existen; falta exponerlo en el endpoint
       y en la vista de historial)
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
-- [ ] Regla: canción gratis por registro (con control antifraude, usando verificacion de correo) — ya existe `free_song_used` en `users`, falta la lógica de negocio
+
+MODELO DE PRECIOS CONFIRMADO — los precios son TOTALES POR PRODUCTO, no
+componentes que se suman. Cada forma de pedir ya incluye la canción:
+`song_price` Q1 = la canción · `queue_jump_price` Q5 = canción + salto ·
+`dedication_price` Q3 = canción + dedicatoria · combo Q7 = las tres cosas.
+
+La prueba está en el `−1` de la fórmula: no es un descuento arbitrario,
+es el precio de la canción que estaba contado dos veces (5 + 3 contaría
+la canción dos veces; el −1 la quita). Descompuesto: canción 1 + salto 4
+
+- dedicatoria 2 = 7.
+
+PRINCIPIO: **el precio que el admin configura es el precio que el cliente
+paga.** Ninguna aritmética entre lo que el dueño escribe y lo que se
+cobra, o el admin va a jurar que puso otro precio — y va a tener razón.
+
+Consecuencia para el cobro: **un pedido genera UN renglón en el libro
+mayor**, tipado según qué producto se vendió (`charge_song`,
+`charge_jump`, `charge_dedication`, `charge_combo`). No se parte en
+componentes: eso inventaría un "ingreso por salto de Q4" que no existe
+en ningún precio publicado.
+
+- [ ] Agregar `charge_combo` al catálogo de tipos de `credit_transactions`
+      (CHECK del esquema + union type de la entidad) cuando llegue Épica 5.
+      Hoy no hace falta: sin dedicatorias no se puede pedir un combo
+- [ ] Revisar la fórmula del combo cuando los precios escalen. El `−1` es
+      un descuento FIJO: con salto Q5 y dedicatoria Q3 representa 12% y
+      motiva; con salto Q10 y dedicatoria Q6 sería 6% y probablemente ya
+      no mueva a nadie. El campo es override manual, así que el admin
+      puede corregirlo — pero la sugerencia automática debería revisarse
+- [x] Regla: canción gratis por registro, con antifraude por correo
+      verificado. Es UNA por persona en toda la plataforma (vive en
+      `users`), no una por local — si viviera en `credit_accounts`,
+      alguien sacaría una gratis en cada bar con la misma cuenta.
+      Se registra como DOS renglones (`grant_free_song` +1 y
+      `charge_song` −1): suman cero, pero la promoción queda escrita y
+      se puede contar. Omitir el cobro la habría vuelto invisible
 - [ ] Expiración de créditos no usados (configurable)
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
-- [ ] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
+- [x] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
 - [ ] Modelo de `Tip` (propina) independiente de `credits` — no comparte tabla ni lógica de gasto. Campo de destino: venue por defecto, artista si "modo artista" está activo
 - [ ] Toggle "modo artista" en configuración del venue — redirige propinas al artista contratado esa noche
 - [ ] Separar en renglones un mismo checkout que incluya salto de cola + propina (dos registros internos, una sola transacción externa)
 - [ ] **En pausa:** transferencia directa (reportar comprobante + confirmación manual del admin) — se retoma cuando se defina el flujo de conciliación bancaria
-- [ ] Lógica de freeSongUsed en queue.service.createRequest — leer/voltear el booleano ANTES de cobrar, con lock para evitar doble uso concurrente (depende de Épica 3, sistema de créditos)
-- [ ] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
-      no según qué se cobró.
-  - Artista/DJ salta el pedido → el servicio nunca se entregó por decisión
-    del local → reembolso TOTAL (canción + salto + dedicatoria)
+- [x] Lógica de freeSongUsed en `queue.service.createRequest` — la fila de
+      `users` se bloquea con `pessimistic_write` dentro de la misma
+      transacción, para que dos pedidos simultáneos no usen la gratis dos
+      veces
+- [x] Cobro al pedir canción — `createRequest` cobra y encola dentro de UNA
+      transacción. Orden de bloqueo respetado: primero el crédito, después
+      la cola. Si no alcanza el saldo, ni se tocan las posiciones
+- [x] Aviso por WebSocket movido DESPUÉS del commit — notificar dentro de
+      la transacción mostraría en la pantalla del DJ una canción que quizá
+      nunca se confirme
+- [x] Regla de reembolso — PRINCIPIO: se reembolsa según quién incumplió,
+      no según qué se cobró (ver ADR 0007)
+  - Artista/DJ salta → el local incumplió → reembolso TOTAL, y si era
+    canción gratis se le restituye la promoción
+  - Cliente cancela con salto pagado → recibió la posición → NO se
+    devuelve nada
+  - Cliente cancela un pedido normal → se le devuelve lo que pagó
+- [x] FIFO entre saltos pagados (ADR 0007) — un salto nuevo va DESPUÉS de
+      los saltos que ya esperan, no adelante. El código anterior mandaba
+      cada salto a `playing.position + 1`, así que el último en pagar
+      pasaba adelante de todos: con 10 saltos vendidos, quien pagó primero
+      terminaba en la posición 11. El defecto empeoraba cuanto mejor le
+      iba al negocio
+- [x] **PRÓXIMO — Prioridad actual:** carga de créditos en recepción
+      (efectivo/tarjeta), staff busca cliente por teléfono y acredita al
+      instante. Falta el endpoint `POST /venues/:venueId/credits/topup`,
+      su DTO y los guards; el motor (`applyTransaction`) ya está
+  - Nota: debe funcionar igual para venues de una sola persona (artistas solistas) — el mismo admin del venue hace la carga, sin mesero de por medio.
   - Cliente cancela → decisión propia, ya se benefició de la posición
     ganada → NO se reembolsa el salto (`is_paid_jump`); solo se reembolsa
     el costo base de la canción si nunca hubo salto pagado
@@ -206,12 +294,40 @@ avisan: ninguna produce un error hoy.
       `verifyIntegrity` valida una sola. En producción hace falta un job
       que recorra todas y avise. Debe devolver SIEMPRE cero filas:
       `sql
-    SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
-      FROM credit_accounts ca
-      LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
-     GROUP BY ca.id, ca.balance
-    HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
-    `
+SELECT ca.id, ca.balance, COALESCE(SUM(ct.amount), 0) AS ledger
+FROM credit_accounts ca
+LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
+ GROUP BY ca.id, ca.balance
+HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
+`
+
+### Cierre de noche — PR 3
+
+Detectado simulando la cola de 50: a las 2 a.m. el bar cierra con pedidos
+en cola, el DJ apaga y se va, y esos pedidos quedan en `queued` PARA
+SIEMPRE. Pagaron, no escucharon nada, y nadie disparó un reembolso.
+
+Y el día siguiente es otra cosa: otra playlist, otro cantante, otras
+canciones. La cola no es perpetua, **pertenece a una sesión**.
+
+- [ ] Tabla `venue_sessions`: venue, `opened_at`, `closed_at`,
+      `closed_by_user_id`, `closed_automatically` (bool). Es lo que
+      permite saber cuánto duró la noche — insumo directo de Épica 8
+- [ ] `queue_requests` se asocia a la sesión abierta del venue
+- [ ] Botón "Cerrar la noche" (rol `dj` o `venue_admin`): salta todos los
+      pedidos pendientes y dispara el reembolso de cada uno con la regla
+      de ADR 0007 (el local no entregó)
+- [ ] **El cliente TIENE que ver su reembolso.** Un crédito que vuelve en
+      silencio no genera confianza; uno anunciado sí. Aviso por WebSocket + historial visible en su pantalla
+- [ ] **RED DE SEGURIDAD — el admin se va a olvidar de cerrar, y eso no
+      nos puede perjudicar.** Cierre automático por inactividad: un job
+      programado (`@nestjs/schedule`) cierra las sesiones sin actividad
+      por N horas (configurable por venue), marcando
+      `closed_automatically = true` para distinguirlas en las métricas.
+      Una sesión mal cerrada NO debe contaminar la duración promedio
+- [ ] Un pedido de una sesión cerrada nunca es reproducible ni cancelable
+- [ ] Métrica de sesión: duración, canciones sonadas, créditos emitidos y
+      gastados, reembolsos. Es el "cuánto generaste hoy" del admin
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 
@@ -234,6 +350,22 @@ avisan: ninguna produce un error hoy.
 - [ ] Panel del DJ: aprobar/rechazar antes de que se lea
 - [ ] Opción de lectura por DJ o por sintetizador de voz
 - [ ] Regla anti-acoso: alerta si una mesa recibe muchas dedicatorias de la misma persona
+- [ ] Caso "cantante en vivo": `delivery_method` ya tiene `dj_voice`,
+      `synth_voice` y `screen_only`, pero en un local de música en vivo no
+      hay DJ. Evaluar renombrar a `live_voice` o agregar `artist_voice`
+- [ ] **UX del aviso al artista — REQUIERE ESTUDIO, no improvisar.**
+      El artista tiene que enterarse de que la canción que está sonando
+      lleva dedicatoria, y el aviso debe SEGUIR VISIBLE mientras dure la
+      canción (la dice cuando pueda, no cuando el sistema quiera).
+      Restricciones duras: - No puede estorbar la acción principal, que es saltar canciones.
+      Un artista tocando no puede pelear con la pantalla - Se ve de lejos y de reojo, a veces con luces encima - Son dos pantallas distintas con necesidades distintas: la TV que
+      ve el público y el dispositivo que ve el artista
+      Un modal bloqueante está descartado de entrada. Explorar: franja
+      fija en un borde, indicador en la fila de la cola que se expande al
+      tocarlo, o zona reservada permanente que no se mueve
+- [ ] Definir qué pasa si la canción termina y el artista nunca leyó la
+      dedicatoria. ¿Se marca como no entregada? ¿Aplica la regla de
+      reembolso de ADR 0006 — incumplió el local?
 
 ## Épica 6 — Panel Admin / DJ
 
@@ -284,6 +416,8 @@ es la razón por la que hoy los roles se asignan en el seed.
 - [ ] Service worker básico para instalabilidad
 - [ ] Prompt activo de "instalar app" (evento beforeinstallprompt), no depender de que el usuario lo encuentre solo
 - [ ] Auditar cada flujo principal contra la regla de 3 clics antes de darlo por terminado
+- [ ] Botón "Cerrar la noche" en el panel del DJ, con confirmación que
+      diga cuántos pedidos se van a reembolsar antes de apretar
 
 ## Épica 7 — Infraestructura y calidad
 

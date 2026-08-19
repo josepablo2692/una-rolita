@@ -5,8 +5,14 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, MoreThanOrEqual, Repository } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import {
+  DataSource,
+  EntityManager,
+  MoreThan,
+  MoreThanOrEqual,
+  Repository,
+} from 'typeorm';
 import Redis from 'ioredis';
 import { randomUUID } from 'crypto';
 import { REDIS_CLIENT } from '../../redis/redis.module';
@@ -15,7 +21,10 @@ import { VenueSongHistory } from './entities/venue-song-history.entity';
 import { QueueRequest } from './entities/queue-request.entity';
 import { QueueJump } from './entities/queue-jump.entity';
 import { VenueTable } from '../venues/entities/venue-table.entity';
+import { User } from '../auth/entities/user.entity';
 import { VenuesService } from '../venues/venues.service';
+import { CreditsService, LedgerLine } from '../credits/credits.service';
+import { CreditTransaction } from '../credits/entities/credit-transaction.entity';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
 import { QueueGateway } from './queue.gateway';
 
@@ -63,6 +72,9 @@ export class QueueService {
     private readonly venueTableRepository: Repository<VenueTable>,
     private readonly venuesService: VenuesService,
     private readonly queueGateway: QueueGateway, // <- nuevo
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
+    private readonly creditsService: CreditsService,
   ) {}
 
   // ==============================================================
@@ -74,11 +86,9 @@ export class QueueService {
     userId: string,
     dto: CreateQueueRequestDto,
   ): Promise<QueueRequest> {
-    const venue = await this.venuesService.findOne(venueId); // Guard Clause: el venue debe existir
+    const venue = await this.venuesService.findOne(venueId);
 
-    // Guard Clause (IDOR): la mesa debe pertenecer a ESTE venue y estar
-    // activa. Antes se aceptaba cualquier tableId: se podía pedir desde
-    // la "mesa 3 del Bar A" estando sentado en el Bar B.
+    // Guard Clause (IDOR): la mesa debe ser de ESTE venue y estar activa.
     const table = await this.venueTableRepository.findOne({
       where: { id: tableId, venueId, isActive: true },
     });
@@ -91,14 +101,18 @@ export class QueueService {
     const song = await this.findOrCreateSong(dto);
     await this.assertCooldownNotActive(venueId, song.id, venue.cooldownHours);
 
-    // --------------------------------------------------------------
-    // LOCK DISTRIBUIDO (Redlock simplificado con SET NX):
-    // solo UN pedido a la vez puede calcular/asignar posición para
-    // este venue específico. Evita que dos personas terminen con la
-    // misma posición si piden casi al mismo tiempo.
-    // --------------------------------------------------------------
+    const esSalto = dto.isPaidJump ?? false;
+
+    // El precio es TOTAL por producto: queue_jump_price ya incluye la
+    // canción, no se suma a song_price (ver ADR 0006 y el modelo de
+    // precios en el backlog).
+    const precio = this.aCreditosEnteros(
+      esSalto ? venue.queueJumpPrice : venue.songPrice,
+      esSalto ? 'salto de cola' : 'canción',
+    );
+
     const lockKey = `lock:queue:${venueId}`;
-    const lockValue = randomUUID(); // identifica ESTE candado, para no borrar el de otro proceso por error
+    const lockValue = randomUUID();
 
     const acquired = await this.redis.set(
       lockKey,
@@ -108,45 +122,138 @@ export class QueueService {
       'NX',
     );
     if (!acquired) {
-      // Alguien más está procesando un pedido para este venue AHORA MISMO.
       throw new BadRequestException(
         'La cola está ocupada procesando otro pedido, intenta de nuevo',
       );
     }
 
+    let saved: QueueRequest;
+
     try {
-      let position: number;
+      // Todo lo que sigue ocurre o no ocurre: cobrar, escribir el libro
+      // mayor y meter la canción en la cola son una sola operación.
+      saved = await this.dataSource.transaction(async (manager) => {
+        // ---- CANDADO 1: el crédito -------------------------------
+        // Primero el crédito y después la cola, SIEMPRE en ese orden.
+        // Si dos operaciones tomaran los recursos al revés, se
+        // esperarían para siempre (interbloqueo).
+        const cuenta = await this.creditsService.ensureAndLockAccount(
+          manager,
+          userId,
+          venueId,
+        );
 
-      if (dto.isPaidJump) {
-        // Valida la regla de negocio ANTES de cobrar/insertar nada (Guard Clause).
-        await this.assertUserCanPayForJump(userId, venueId);
-        position = await this.calculateJumpPosition(venueId);
-      } else {
-        position = await this.calculateNextPosition(venueId);
-      }
+        // ---- CANDADO 2: el usuario -------------------------------
+        // La canción gratis vive en users.free_song_used y es UNA por
+        // persona en toda la plataforma, no una por local. Se bloquea la
+        // fila para que dos pedidos simultáneos no la usen dos veces.
+        const usuario = await manager.findOne(User, {
+          where: { id: userId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!usuario) {
+          throw new NotFoundException('El usuario del pedido no existe');
+        }
 
-      const queueRequest = this.queueRequestRepository.create({
-        venueId,
-        tableId,
-        userId,
-        songId: song.id,
-        position,
-        isPaidJump: dto.isPaidJump ?? false,
-        paidAmount: dto.isPaidJump ? venue.queueJumpPrice : 0,
+        // La gratis cubre el producto "canción sola". Si querés saltar la
+        // cola en tu primer pedido, pagás el salto completo y conservás
+        // tu canción gratis para después.
+        // Antifraude: solo con correo verificado (backlog línea 184).
+        const esGratis =
+          !esSalto && !usuario.freeSongUsed && usuario.isEmailVerified;
+
+        // Un pedido = UN renglón por producto. La gratis son dos: el
+        // regalo y el cobro. Suman cero, pero queda escrito que hubo
+        // promoción — si solo omitiéramos el cobro, sería invisible.
+        // El renglón POSITIVO va primero: el saldo no puede quedar
+        // negativo en el camino.
+        const renglones: LedgerLine[] = esGratis
+          ? [
+              { type: 'grant_free_song', amount: +precio },
+              { type: 'charge_song', amount: -precio },
+            ]
+          : [
+              {
+                type: esSalto ? 'charge_jump' : 'charge_song',
+                amount: -precio,
+              },
+            ];
+
+        // Fallar rápido: si no alcanza, ni tocamos las posiciones de la
+        // cola. El mensaje se lo damos aquí, no a mitad del cobro.
+        const neto = renglones.reduce((suma, r) => suma + r.amount, 0);
+        if (cuenta.balance + neto < 0) {
+          throw new BadRequestException(
+            `No te alcanzan los créditos: tenés ${cuenta.balance} y este pedido cuesta ${Math.abs(neto)}`,
+          );
+        }
+
+        if (esSalto) {
+          await this.assertUserCanPayForJump(userId, venueId);
+        }
+
+        // ---- Ahora sí, la cola ------------------------------------
+        const position = esSalto
+          ? await this.calculateJumpPosition(manager, venueId)
+          : await this.calculateNextPosition(manager, venueId);
+
+        const queueRequest = manager.create(QueueRequest, {
+          venueId,
+          tableId,
+          userId,
+          songId: song.id,
+          position,
+          isPaidJump: esSalto,
+          paidAmount: esGratis ? 0 : precio,
+        });
+        const guardado = await manager.save(queueRequest);
+
+        // El cobro apunta al pedido, por eso va después de crearlo: no se
+        // puede referenciar algo que todavía no existe.
+        await this.creditsService.applyLines({
+          userId,
+          venueId,
+          manager, // ← dentro de NUESTRA transacción, no una aparte
+          lines: renglones.map((r) => ({
+            ...r,
+            queueRequestId: guardado.id,
+          })),
+        });
+
+        if (esGratis) {
+          usuario.freeSongUsed = true;
+          await manager.save(usuario);
+        }
+
+        if (esSalto) {
+          await this.registerJump(manager, userId, venueId, guardado.id);
+        }
+
+        return guardado;
       });
-      const saved = await this.queueRequestRepository.save(queueRequest);
-
-      if (dto.isPaidJump) {
-        await this.registerJump(userId, venueId, saved.id);
-      }
-      const updatedQueue = await this.findQueueByVenue(venueId);
-      this.queueGateway.notifyQueueUpdated(venueId, updatedQueue); // <- Notifica el nuevo pedido
-      return saved;
     } finally {
-      // Libera el lock SIEMPRE, incluso si algo falló arriba — para
-      // no dejar el venue bloqueado indefinidamente por un error.
       await this.releaseLockIfOwned(lockKey, lockValue);
     }
+
+    // El aviso va DESPUÉS del commit. Si notificáramos dentro de la
+    // transacción y algo fallara, la pantalla del DJ mostraría una
+    // canción que nunca existió.
+    const updatedQueue = await this.findQueueByVenue(venueId);
+    this.queueGateway.notifyQueueUpdated(venueId, updatedQueue);
+
+    return saved;
+  }
+
+  // Los precios se guardan en NUMERIC porque son dinero, pero los
+  // créditos son enteros. Un CHECK en la base ya obliga a que los precios
+  // sean enteros; esto es la red por si alguien lo desactiva.
+  private aCreditosEnteros(precio: number, etiqueta: string): number {
+    if (!Number.isInteger(precio) || precio < 0) {
+      throw new BadRequestException(
+        `El precio de ${etiqueta} está mal configurado (${precio}): debe ser un número entero de quetzales`,
+      );
+    }
+    return precio;
   }
 
   async findQueueByVenue(
@@ -193,79 +300,171 @@ export class QueueService {
     return request;
   }
 
-  // Cancela un pedido — solo el usuario dueño puede hacerlo. No borra
-  // la fila (igual que markAsPlayed), solo cambia su estado, para
-  // conservar el historial completo.
+  // Cancelar el pedido propio — decisión del cliente.
+  //
+  // Si pagó salto de cola, YA recibió la posición que compró: no se
+  // reembolsa. Y con precios totales, todo el precio del salto ES el
+  // producto salto — no hay una "parte canción" separable que devolver.
+  //
+  // Si fue un pedido normal, se le devuelve lo que pagó.
+  // No se borra la fila, solo cambia su estado: el historial se conserva.
   async cancelRequest(
     venueId: string,
     id: string,
     userId: string,
   ): Promise<QueueRequest> {
-    const request = await this.queueRequestRepository.findOne({
-      where: { id, venueId },
+    const actualizado = await this.dataSource.transaction(async (manager) => {
+      const request = await manager.findOne(QueueRequest, {
+        where: { id, venueId },
+      });
+      if (!request) {
+        throw new NotFoundException(
+          `No se encontró el pedido ${id} en este negocio`,
+        );
+      }
+
+      if (request.userId !== userId) {
+        throw new ForbiddenException(
+          'No puedes cancelar el pedido de otra persona',
+        );
+      }
+
+      if (request.status !== 'queued') {
+        throw new BadRequestException(
+          `No se puede cancelar un pedido en estado "${request.status}"`,
+        );
+      }
+
+      // La diferencia con skipRequest está en esta línea: aquí el cliente
+      // decidió retirarse, así que el salto pagado no se devuelve.
+      if (!request.isPaidJump) {
+        const { neto } = await this.netoCobrado(manager, id);
+
+        if (neto < 0) {
+          await this.creditsService.applyLines({
+            userId: request.userId,
+            venueId,
+            manager,
+            lines: [
+              {
+                type: 'refund',
+                amount: Math.abs(neto),
+                queueRequestId: id,
+              },
+            ],
+          });
+        }
+      }
+
+      // La canción gratis NO se restituye al cancelar: fue decisión del
+      // cliente, no un incumplimiento del local.
+
+      request.status = 'cancelled';
+      return manager.save(request);
     });
-    if (!request) {
-      throw new NotFoundException(
-        `No se encontró el pedido ${id} en este negocio`,
-      );
-    }
 
-    if (request.userId !== userId) {
-      throw new ForbiddenException(
-        'No puedes cancelar el pedido de otra persona',
-      );
-    }
+    const updatedQueue = await this.findQueueByVenue(venueId);
+    this.queueGateway.notifyQueueUpdated(venueId, updatedQueue);
 
-    if (request.status !== 'queued') {
-      throw new BadRequestException(
-        `No se puede cancelar un pedido en estado "${request.status}"`,
-      );
-    }
-
-    request.status = 'cancelled';
-    await this.queueRequestRepository.save(request);
-
-    const updatedQueue = await this.findQueueByVenue(request.venueId);
-    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue);
-
-    return request;
+    return actualizado;
   }
-  // Saltar un pedido — decisión unilateral del artista/DJ. El cliente no
-  // incumplió nada, así que en Épica 3 esto dispara reembolso TOTAL
-  // (ADR 0006). Por eso el endpoint exige rol dj/venue_admin.
+
+  // Saltar un pedido — decisión unilateral del artista o el DJ.
+  //
+  // El cliente no hizo nada mal: el servicio nunca se entregó porque el
+  // local decidió no entregarlo. Reembolso TOTAL (ADR 0007). Por eso el
+  // endpoint exige rol dj/venue_admin.
   async skipRequest(venueId: string, id: string): Promise<QueueRequest> {
-    const request = await this.queueRequestRepository.findOne({
-      where: { id, venueId },
+    const actualizado = await this.dataSource.transaction(async (manager) => {
+      // El venueId va dentro del WHERE: un pedido de otro local
+      // simplemente no existe para esta consulta.
+      const request = await manager.findOne(QueueRequest, {
+        where: { id, venueId },
+      });
+      if (!request) {
+        throw new NotFoundException(
+          `No se encontró el pedido ${id} en este negocio`,
+        );
+      }
+
+      // Guard Clause: solo se puede saltar lo que está en cola. También
+      // es lo que impide reembolsar dos veces el mismo pedido.
+      if (request.status !== 'queued') {
+        throw new BadRequestException(
+          `No se puede saltar un pedido en estado "${request.status}"`,
+        );
+      }
+
+      const { neto, fueGratis } = await this.netoCobrado(manager, id);
+
+      // Si se cobró algo, se devuelve completo. `neto` es negativo, así
+      // que el reembolso es su valor absoluto.
+      if (neto < 0) {
+        await this.creditsService.applyLines({
+          userId: request.userId,
+          venueId,
+          manager, // dentro de NUESTRA transacción
+          lines: [
+            {
+              type: 'refund',
+              amount: Math.abs(neto),
+              queueRequestId: id,
+            },
+          ],
+        });
+      }
+
+      // Canción gratis saltada por el artista: no hay crédito que
+      // devolver (el neto fue cero), pero el cliente perdió su promoción
+      // sin recibir nada. Como el local incumplió, se le restituye.
+      if (fueGratis) {
+        const usuario = await manager.findOne(User, {
+          where: { id: request.userId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (usuario) {
+          usuario.freeSongUsed = false;
+          await manager.save(usuario);
+        }
+      }
+
+      request.status = 'skipped';
+      return manager.save(request);
     });
-    if (!request) {
-      throw new NotFoundException(
-        `No se encontró el pedido ${id} en este negocio`,
-      );
-    }
-    if (request.status !== 'queued') {
-      throw new BadRequestException(
-        `No se puede saltar un pedido en estado "${request.status}"`,
-      );
-    }
 
-    request.status = 'skipped';
-    await this.queueRequestRepository.save(request);
+    // El aviso, después del commit.
+    const updatedQueue = await this.findQueueByVenue(venueId);
+    this.queueGateway.notifyQueueUpdated(venueId, updatedQueue);
 
-    // TODO Épica 3: si request.isPaidJump, el monto del salto NO se
-    // reembolsa (ya se recibió el beneficio de posición). Si no era
-    // salto pagado, reembolsar el Q1 de la canción cuando exista
-    // el sistema de créditos.
-
-    const updatedQueue = await this.findQueueByVenue(request.venueId);
-    this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue);
-
-    return request;
+    return actualizado;
   }
 
   // ==============================================================
   // Métodos privados: cada uno resuelve UNA sola regla de negocio
   // (Single Responsibility a nivel de método, no solo de clase).
   // ==============================================================
+
+  // Qué se le cobró realmente a este pedido.
+  //
+  // Se excluyen los reembolsos previos para no devolver dos veces. El
+  // neto puede ser CERO: es el caso de la canción gratis, donde el regalo
+  // (+1) y el cobro (−1) se anulan.
+  private async netoCobrado(
+    manager: EntityManager,
+    queueRequestId: string,
+  ): Promise<{ neto: number; fueGratis: boolean }> {
+    const renglones = await manager.find(CreditTransaction, {
+      where: { queueRequestId },
+    });
+
+    const movimientos = renglones.filter((r) => r.type !== 'refund');
+
+    return {
+      // Los cobros son negativos, así que el neto sale negativo o cero.
+      neto: movimientos.reduce((suma, r) => suma + r.amount, 0),
+      fueGratis: movimientos.some((r) => r.type === 'grant_free_song'),
+    };
+  }
 
   // Busca la canción en el catálogo por su ID de proveedor; si no
   // existe todavía, la crea (evita duplicados de la misma canción
@@ -337,55 +536,91 @@ export class QueueService {
     }
   }
 
-  // Deja constancia del salto pagado, con la "foto" de cuántas
-  // canciones habían sonado — necesaria para el cooldown futuro.
+  // Deja constancia del salto pagado, con la "foto" de cuántas canciones
+  // habían sonado — necesaria para el cooldown de saltos.
   private async registerJump(
+    manager: EntityManager,
     userId: string,
     venueId: string,
     queueRequestId: string,
   ): Promise<void> {
-    const songsPlayedSnapshot = await this.historyRepository.count({
+    const songsPlayedSnapshot = await manager.count(VenueSongHistory, {
       where: { venueId },
     });
 
-    const jump = this.queueJumpRepository.create({
+    const jump = manager.create(QueueJump, {
       userId,
       venueId,
       queueRequestId,
       songsPlayedSnapshot,
     });
-    await this.queueJumpRepository.save(jump);
+    await manager.save(jump);
   }
 
   // Posición normal: al final de la cola actual.
-  private async calculateNextPosition(venueId: string): Promise<number> {
-    const last = await this.queueRequestRepository.findOne({
+  // Recibe `manager` para correr DENTRO de la transacción del cobro. Con
+  // this.queueRequestRepository correría fuera, y ese es el error más
+  // difícil de detectar en este tipo de código.
+  private async calculateNextPosition(
+    manager: EntityManager,
+    venueId: string,
+  ): Promise<number> {
+    const last = await manager.findOne(QueueRequest, {
       where: { venueId, status: 'queued' as const },
       order: { position: 'DESC' },
     });
     return (last?.position ?? 0) + 1;
   }
 
-  // Posición de salto pagado: justo después de lo que ya está sonando.
+  // Posición de salto pagado: justo después de lo que está sonando, y
+  // EMPUJANDO a todos los que estaban ahí o más atrás. Sin el empuje, dos
+  // saltos pagados quedan en la misma posición y se cobra dos veces el
+  // mismo lugar.
+  // Posición de un salto pagado.
   //
-  // El paso clave es EMPUJAR a los demás. Antes solo se devolvía
-  // `playing.position + 1` sin mover a nadie: si la canción sonando
-  // estaba en la 5, el salto iba a la 6 — donde ya había alguien. Dos
-  // saltos pagados seguidos quedaban ambos en la 6, y el ORDER BY
-  // position desempataba al azar. Le cobrábamos a dos personas por el
-  // mismo lugar, y no garantizábamos la posición que vendimos.
+  // FIFO ENTRE SALTOS (ADR 0007): el salto nuevo va DESPUÉS de los saltos
+  // que ya están esperando, no adelante de ellos.
   //
-  // Corre dentro del lock de Redis, así que ningún otro pedido de este
-  // venue puede calcular posiciones mientras esto sucede.
-  private async calculateJumpPosition(venueId: string): Promise<number> {
-    const playing = await this.queueRequestRepository.findOne({
-      where: { venueId, status: 'playing' as const },
+  // Antes iba siempre a `playing.position + 1`, así que cada salto nuevo
+  // se metía adelante de todos los anteriores: quien pagaba primero
+  // terminaba último entre los que pagaron. Con 10 saltos vendidos en una
+  // noche, el primero pasaba de la posición 2 a la 11 — pagó por una
+  // posición que nunca tuvo.
+  //
+  // Corre dentro del lock de Redis y de la transacción, así que nadie más
+  // puede calcular posiciones para este venue mientras esto sucede.
+  private async calculateJumpPosition(
+    manager: EntityManager,
+    venueId: string,
+  ): Promise<number> {
+    // El último salto pagado que sigue en cola marca el final del bloque
+    // de saltos. El nuevo se pone justo después.
+    const ultimoSalto = await manager.findOne(QueueRequest, {
+      where: {
+        venueId,
+        status: 'queued' as const,
+        isPaidJump: true,
+      },
+      order: { position: 'DESC' },
     });
-    const targetPosition = (playing?.position ?? 0) + 1;
 
-    // Un solo UPDATE, atómico en Postgres: corre a todos los que están
-    // en la posición destino o más atrás.
-    await this.queueRequestRepository.increment(
+    let targetPosition: number;
+
+    if (ultimoSalto) {
+      targetPosition = ultimoSalto.position + 1;
+    } else {
+      // Nadie ha pagado salto todavía: va justo después de lo que suena.
+      const playing = await manager.findOne(QueueRequest, {
+        where: { venueId, status: 'playing' as const },
+      });
+      targetPosition = (playing?.position ?? 0) + 1;
+    }
+
+    // Empuja una posición a todos los que estaban ahí o más atrás. Sin
+    // esto, dos pedidos quedarían con el mismo número y el ORDER BY
+    // desempataría al azar.
+    await manager.increment(
+      QueueRequest,
       {
         venueId,
         status: 'queued' as const,
@@ -397,7 +632,6 @@ export class QueueService {
 
     return targetPosition;
   }
-
   // Libera el lock SOLO si sigue siendo el que este proceso creó.
   // La comparación y el borrado van en un script Lua (ver
   // RELEASE_LOCK_SCRIPT arriba) para que sean una sola operación
