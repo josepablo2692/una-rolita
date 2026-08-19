@@ -29,7 +29,8 @@ export class TopupCreditsDto {
   credits!: number;
 
   @IsIn(['efectivo_recepcion', 'tarjeta_recepcion'], {
-    message: 'El método de pago debe ser efectivo_recepcion o tarjeta_recepcion',
+    message:
+      'El método de pago debe ser efectivo_recepcion o tarjeta_recepcion',
   })
   paymentMethod!: 'efectivo_recepcion' | 'tarjeta_recepcion';
 

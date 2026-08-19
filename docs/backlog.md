@@ -44,16 +44,40 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
 
 - [x] Generar QR único por mesa (token vía `randomUUID()`, embebido en la URL del QR)
 - [x] Endpoint: crear sesión de mesa (invitado) a partir del QR (`POST /auth/scan`)
-- [x] Endpoint: registro con verificación OTP por email (Redis + Mailtrap, arquitectura vía OtpSender/OTP_SENDER)
+- [x] Endpoint: registro con verificación OTP por email (Redis + SMTP genérico vía nodemailer, arquitectura vía OtpSender/OTP_SENDER — el proveedor se decide en el `.env`, no en el código)
 - [x] Upgrade de sesión de mesa a usuario autenticado (`POST /auth/upgrade`)
 - [x] JWT de acceso (8 horas) — JwtStrategy + JwtAuthGuard
 - [x] Refresh token — revocación individual y total vía Redis (jti por sesión + set por usuario, TTL 7 días)
 - [x] Login de admin/venue_admin/DJ/staff — endpoint separado del OTP de cliente, entrega JWT con el `role` real desde `user_venue_roles`
 - [x] Guard de roles (`RolesGuard` + `@Roles()`)
-- [x] OAuth con Google (y opcionalmente Facebook) como alternativa de bajo-fricción al OTP por correo — PRIORIDAD antes de iniciar Épica 3
+- [x] OAuth con Google como alternativa de bajo-fricción al OTP por correo — CÓDIGO completo y probado con cuenta real. ⚠️ NO está listo para producción: la app sigue en modo "Testing" en Google Cloud Console. Ver "Dependencias externas" abajo
 - [x] deviceFingerprint: columna + DTO + Service listos para recibirlo (backend)
 - [ ] deviceFingerprint: generación real en frontend (fingerprintjs o similar) — pendiente hasta que exista frontend
 - [ ] OAuth con Facebook — APLAZADO: bloqueado en configuración de Facebook for Developers (no en código). Falta: crear la app, agregar producto "Facebook Login", configurar callback URL, y copiar App ID/Secret al .env. Una vez con las credenciales, el código es copia del patrón de GoogleStrategy (mismo archivo, misma estructura) — no debería tomar más de 15-20 min una vez resuelto el lado de Facebook.
+
+### Dependencias externas que bloquean producción (no son código)
+
+Las tres son configuración fuera de NestJS. El código está terminado y
+probado en los tres casos; lo que falta es trámite con terceros. Se
+agrupan aquí porque comparten un riesgo: **son lentas y no dependen de
+nosotros**, así que hay que arrancarlas con anticipación, no la semana
+del lanzamiento.
+
+- [ ] **Publicar la app de Google OAuth** (sacarla de modo "Testing" en
+      Google Cloud Console). Hoy solo los correos agregados como *test
+      users* pueden entrar con "Continuar con Google"; cualquier cliente
+      real de un bar sería rechazado **por Google, no por nuestro código**.
+      El proceso de verificación puede pedir política de privacidad
+      pública, términos de uso y una pantalla de consentimiento revisada.
+      Es la diferencia entre "probado por mí" y "funciona para cualquiera"
+- [ ] **Definir proveedor de correo transaccional para producción.**
+      `EmailOtpSender` usa SMTP genérico, así que cambiar de proveedor es
+      solo tocar el `.env` — ningún cambio de código. Pero hay que
+      verificar límites de envío diario y reputación de entrega: un OTP
+      que cae en spam es un cliente que no puede registrarse. Los
+      proveedores de correo personal no están pensados para volumen
+      transaccional
+- [ ] OAuth con Facebook (ver arriba) — misma categoría: trámite externo
 
 ## Épica 2 — Cola de pedidos
 
