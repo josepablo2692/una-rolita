@@ -116,8 +116,21 @@ de "ahorita no es necesario".
 | --- | --------------------------------------------------------- | ------- |
 | 1   | Reversión (nota de crédito) + auditoría visible           | PR 3 ✅ |
 | 2   | Cierre de noche (`venue_sessions` + cierre automático)    | PR 4 ✅ |
-| 3   | Expiración de créditos por inactividad                    | PR 5 ←  |
-| 4   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 6    |
+| 3   | Expiración de créditos por inactividad                    | PR 5 ✅ |
+| 4   | Avisos al cliente: correo + mensaje en app                | PR 6 ←  |
+| 5   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 7    |
+| 6   | Código efímero + QR — la parte de BACKEND                 | PR 8    |
+
+**Decisión del 20\ago — qué entra antes del 31.** Se elige cerrar Épica 3
+completa por encima de desplegar. Consecuencia asumida y explícita: el
+**despliegue en servidor real y la estrategia de pruebas completa pasan a
+septiembre**. Eran la meta declarada del 31\ago; ya no lo son. Se anota
+aquí para que el cambio sea una decisión y no un olvido.
+
+Los riesgos #1 (respaldos) y #4 (pool de conexiones) de la lista de abajo
+NO se pueden cerrar antes: dependen de elegir proveedor de despliegue.
+Los riesgos #2 (`COUNT` que se degrada) y #5 (verificación diaria de la
+invariante) sí son código y entran después de PR 8.
 
 **Bloqueado por causa externa — NO es deuda nuestra:**
 
@@ -262,7 +275,29 @@ en ningún precio publicado.
       Se registra como DOS renglones (`grant_free_song` +1 y
       `charge_song` −1): suman cero, pero la promoción queda escrita y
       se puede contar. Omitir el cobro la habría vuelto invisible
-- [ ] Expiración de créditos no usados (configurable)
+- [x] **Expiración de créditos por inactividad — PR 5.** 12 meses por
+      default, configurable por local con `PATCH /venues/:id/policies`;
+      `0` = no expiran nunca (enmienda a ADR 0006). Se registra como
+      renglón `type = 'expiration'` con su razón escrita, nunca como un
+      reseteo silencioso del saldo.
+
+      **La regla que lo gobierna: una cuenta NO expira si no se le avisó
+      antes.** El aviso no es cortesía, es precondición — si el correo
+      está caído un mes, no expira nada. Ante la duda, el dinero se queda
+      con el cliente. Son dos jobs (`@Cron` diario, 4 a.m. avisar y 5 a.m.
+      expirar) y `expiry_warning_sent_at` vuelve a NULL en cada
+      movimiento, para no dejar sin aviso al cliente que sí regresó
+- [ ] **Avisos al cliente sobre su dinero — correo Y mensaje dentro de la
+      app, los dos canales.** Un crédito que se mueve sin que el cliente se
+      entere es indistinguible de un robo desde su lado. El correo puede
+      caer en spam; el mensaje en la app solo lo ve quien entra. Tres usos,
+      un solo mecanismo: (a) **reembolso al cerrar la noche** — hoy solo se
+      emite por WebSocket, así que quien cerró la app nunca se entera;
+      (b) **aviso previo de expiración**, N días antes — el canal de
+      correo YA existe (`ExpiryNotifier` + `EmailExpiryNotifier`, PR 5);
+      falta el de la app; (c) **cambios de
+      reglas de negocio**. Necesita bitácora de envíos: sin registro de qué
+      se mandó y a quién, no se puede demostrar que se avisó
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
 - [x] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
 - [ ] Modelo de `Tip` (propina) independiente de `credits` — no comparte tabla ni lógica de gasto. Campo de destino: venue por defecto, artista si "modo artista" está activo
@@ -319,12 +354,13 @@ avisan: ninguna produce un error hoy.
       consulta se hace más lenta linealmente. No falla nunca — solo un
       sábado el salto tarda dos segundos y "el sistema está lento".
       Arreglar con un contador incremental por venue
-- [ ] **3. Interbloqueos — llegan en el PR de cobros.** Hoy se bloquea UNA
-      fila por transacción, así que es imposible. Pero pedir una canción va
-      a tocar dos recursos: la cuenta de créditos y las posiciones de cola.
-      REGLA A FIJAR ANTES DE ESCRIBIR ESE CÓDIGO: siempre en el mismo
-      orden, primero el crédito y después la cola (si no hay saldo, no
-      vale la pena tocar posiciones)
+- [x] **3. Interbloqueos.** Resuelto en PR 4. La regla quedó fijada y son
+      CUATRO recursos, no dos: **sesión → crédito → usuario → cola**, en
+      ese orden, en toda operación que los toque. La versión original de
+      este punto decía "primero el crédito y después la cola" y se quedó
+      corta: al llegar `venue_sessions`, cerrar la noche tomaba sesión
+      antes que crédito y pedir una canción al revés — interbloqueo real
+      entre un cliente pidiendo música y el DJ cerrando
 - [ ] **4. Pool de conexiones.** TypeORM abre ~10 conexiones por instancia;
       Postgres acepta ~100 por defecto. Con una instancia sobra; con varias
       detrás de un balanceador se multiplica hasta que la app no puede

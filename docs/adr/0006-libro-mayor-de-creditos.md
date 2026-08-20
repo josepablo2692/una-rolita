@@ -101,7 +101,8 @@ correspondiente en el ledger.
 ### 8. Expiración por inactividad de cuenta
 
 No expiran créditos individuales; expira el saldo completo de una cuenta
-sin movimiento durante `venues.credit_expiry_months` (default 3).
+sin movimiento durante `venues.credit_expiry_months` (default 12 — ver la
+enmienda al final de este documento; el default original era 3).
 
 La alternativa —expirar por lote con consumo FIFO— es más precisa pero
 requiere una tabla de lotes y asignaciones, y vuelve cada cobro un
@@ -141,6 +142,34 @@ condiciones aceptados por el usuario. Se registra la versión aceptada
 (`users.terms_version_accepted` y `terms_accepted_at`) para poder
 demostrar, ante una auditoría, qué política aceptó cada cliente y
 cuándo.
+
+**Enmienda — la expiración pasa de 3 a 12 meses**
+
+El default de `venues.credit_expiry_months` sube de 3 a **12**. El local
+sigue pudiendo configurarlo, y `0` significa que sus créditos no expiran
+nunca.
+
+El razonamiento no es técnico, es de negocio:
+
+- **El dinero ya está cobrado.** El local recibió el efectivo cuando el
+  cliente cargó. Expirar a los 3 meses no le da liquidez nueva: solo le
+  quita el pasivo antes. La urgencia era falsa.
+- **Tres meses castiga al cliente ocasional.** Alguien que sale dos veces
+  al año no está abandonando su saldo; simplemente no sale seguido. Es
+  justo el cliente que menos se puede dar el lujo de perder Q20.
+- **Un año se defiende solo.** Es la vigencia que la gente ya entiende de
+  cualquier producto con fecha de vencimiento. Explicarla no requiere
+  argumento; explicar tres meses sí.
+
+El costo de la decisión es un pasivo que vive cuatro veces más tiempo en
+los libros del local. Es aceptable: el crédito no genera intereses y ya
+está representado en `credit_accounts.balance`.
+
+**Consecuencia sobre el aviso:** con una ventana de 12 meses, el aviso
+previo deja de ser una formalidad y pasa a ser la única defensa real. Un
+cliente que no entró en un año no recuerda que tenía saldo. Se avisa por
+correo Y dentro de la aplicación — los dos canales, no uno u otro: el
+correo puede caer en spam y el mensaje en la app solo lo ve quien entra.
 
 **Corrección posterior — orden del ledger**
 
