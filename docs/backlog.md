@@ -47,7 +47,7 @@ cola. Los tres tenían vulnerabilidades explotables. Rama:
       recién creada. Es data de catálogo, no de prueba: producción también
       la necesita
 - [x] Datos semilla para pruebas (`src/seed/seed.ts`)
-- [ ] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
+- [x] Evidencia de cada P0 (400 de mass assignment, 403 de venue ajeno)
 
 ## Épica 1 — Auth + QR (registro progresivo)
 
@@ -103,6 +103,30 @@ del lanzamiento.
 - [x] Sacar `userId` del JWT (Guard) en vez de recibirlo en el body — deuda técnica pendiente hasta que exista `RolesGuard` completo
 
 ## Épica 3 — Créditos y pagos
+
+### PLAN DE CIERRE — orden de ejecución
+
+Terminar la épica significa **terminar todo lo que no esté bloqueado por
+un tercero**. Lo bloqueado se declara con su causa; no se esconde detrás
+de "ahorita no es necesario".
+
+**Se hace, en este orden:**
+
+| #   | Qué                                                       | PR      |
+| --- | --------------------------------------------------------- | ------- |
+| 1   | Reversión (nota de crédito) + auditoría visible           | PR 3 ✅ |
+| 2   | Cierre de noche (`venue_sessions` + cierre automático)    | PR 4    |
+| 3   | Expiración de créditos por inactividad                    | PR 5    |
+| 4   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 6    |
+
+**Bloqueado por causa externa — NO es deuda nuestra:**
+
+| Qué                            | Por qué                                                                             | Se destraba cuando                         |
+| ------------------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------ |
+| Integración con Recurrente     | No hay cuenta ni credenciales de la pasarela                                        | Se abra la cuenta (trámite, como Facebook) |
+| Código efímero + QR de cliente | No existe frontend que lo muestre                                                   | Empiece Épica 6                            |
+| `charge_combo`                 | No se pueden pedir dedicatorias todavía                                             | Épica 5                                    |
+| Transferencia directa          | Falta DEFINIR el flujo de conciliación bancaria — decisión de negocio, no de código | Se defina la regla                         |
 
 - [x] Modelo de créditos y transacciones (`payment_method`, saldo) — libro
       mayor inmutable según ADR 0006. Esquema en `schema.sql` + entidades
@@ -181,10 +205,25 @@ escanea o teclea, ve nombre y saldo, y carga.
       resuelve la fricción del registro pero NO el problema de
       identificación en recepción — el teléfono tiene que capturarse en
       nuestro flujo, no depender del método de registro
-- [ ] Reversión de transacciones de crédito (nota de crédito) — nunca editar/borrar, crear transacción reversa referenciando la original vía `reverses_transaction_id`
-- [ ] Auditoría: registrar `created_by_staff_id` en cada carga para trazabilidad
-      (la columna y el parámetro ya existen; falta exponerlo en el endpoint
-      y en la vista de historial)
+- [x] Reversión de transacciones de crédito (nota de crédito) — nunca
+      editar ni borrar: se inserta un asiento contrario que apunta al
+      original vía `reverses_transaction_id`, con motivo obligatorio de
+      al menos 10 caracteres. Admite reversa PARCIAL cuando el cliente ya
+      gastó: el sistema dice el máximo reversible en vez de reventar
+- [x] SEPARACIÓN DE FUNCIONES: revertir es solo de `venue_admin`, nunca
+      de `staff`. Quien comete el error no puede borrarlo solo — si un
+      mesero pudiera revertir sus propias cargas, podría cobrar efectivo,
+      acreditar, y borrar el rastro cuando el cliente se fue
+- [x] Auditoría: `GET /credits/transactions` muestra el historial del
+      local con el nombre del mesero de cada carga. Solo `venue_admin`:
+      ver cuánto gasta cada cliente y qué hizo cada compañero es
+      administración, no operación diaria
+- [x] `GET /credits/me/transactions` — el cliente ve su propio historial,
+      sin datos del personal. El userId sale del token
+- [x] `seq BIGSERIAL` como orden del libro mayor. `created_at` NO sirve:
+      TypeORM lo llena con Date de JavaScript (milisegundos), así que
+      renglones de la misma operación empatan y el ORDER BY desempata al
+      azar. Lo destapó una prueba que pasaba por suerte
 - [x] Precio combo (salto + dedicatoria) como campo independiente y configurable — sugerido automáticamente como (queueJumpPrice + dedicationPrice - 1), con opción de override manual por el admin
 
 MODELO DE PRECIOS CONFIRMADO — los precios son TOTALES POR PRODUCTO, no
@@ -429,7 +468,7 @@ es la razón por la que hoy los roles se asignan en el seed.
 - [x] ADR 0003: frontend mobile-first y PWA (ya documentado en `docs/adr/`)
 - [x] ADR 0004: métodos de pago duales, arquitectura extensible vía PaymentMethod
 - [x] Pruebas unitarias para OtpService, RefreshTokenService, AuthService (loginStaff, upgradeGuestToUser)
-- [ ] **PRIORITARIO — Convertir la evidencia manual de Fase 1 en pruebas
+- [x] **PRIORITARIO — Convertir la evidencia manual de Fase 1 en pruebas
       automáticas** (`test/venue-access.e2e-spec.ts` con supertest).
       Contexto: los seis P0 se verificaron a mano con `curl.exe` y dieron
       `200 · 403 · 400 · 403 · 200`. Esa evidencia demuestra que funcionaba
@@ -440,7 +479,7 @@ es la razón por la que hoy los roles se asignan en el seed.
       Requiere: el seed corriendo antes de la suite, y que GitHub Actions
       la ejecute en cada PR. Sin el paso de CI, la prueba existe pero
       nadie se entera cuando falla
-- [ ] **BLOQUEA lo anterior** — Extraer la configuración global de la app
+- [x] **BLOQUEA lo anterior** — Extraer la configuración global de la app
       (`ValidationPipe`, y más adelante filtros e interceptores) a una
       función reutilizable, ej. `src/common/setup-app.ts`, que llamen tanto
       `main.ts` como el `beforeAll` de las pruebas e2e.
@@ -467,10 +506,10 @@ es la razón por la que hoy los roles se asignan en el seed.
       `schema.sql` queda como línea base (migración 0); de ahí en adelante todo
       cambio de esquema es una migración versionada. Sin esto, el primer cambio
       de columna en producción es manual y sin vuelta atrás
-- [ ] Pruebas de `VenueRolesGuard`: rol correcto en venue propio (pasa),
+- [x] Pruebas de `VenueRolesGuard`: rol correcto en venue propio (pasa),
       rol correcto en venue ajeno (403), sin rol en el venue (403),
       super_admin en cualquier venue (pasa)
-- [ ] Pruebas de aislamiento entre locales: pedido del Bar A no accesible
+- [x] Pruebas de aislamiento entre locales: pedido del Bar A no accesible
       desde la ruta del Bar B
 - [ ] Separar el rol de PLATAFORMA del rol de VENUE. Hoy `super_admin`
       necesita una fila nominal en `user_venue_roles` para que `loginStaff`
@@ -482,6 +521,14 @@ es la razón por la que hoy los roles se asignan en el seed.
       independientes con personal propio, idempotente, bloqueado en
       producción por `NODE_ENV`. Es lo que hace posible probar el
       aislamiento entre negocios
+- [ ] DECISIÓN DE DESPLIEGUE = DECISIÓN DE RESPALDOS. Elegir Postgres
+      administrado cierra el riesgo #1 sin escribir código; un VPS propio
+      lo convierte en responsabilidad permanente (pg_dump + cron + copia
+      fuera del servidor). Criterio para comparar proveedores: ¿incluye
+      respaldos automáticos? ¿cuántos días retiene?
+- [ ] PROBAR UNA RESTAURACIÓN antes del lanzamiento. Un respaldo que
+      nunca se restauró no se sabe si sirve. Levantar una base vacía y
+      recuperar el volcado completo
 
 ## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
 
@@ -500,7 +547,7 @@ es la razón por la que hoy los roles se asignan en el seed.
 
 ### Hallazgos nuevos, diferidos
 
-- [ ] La inserción del pedido y el empuje de posiciones son dos escrituras
+- [x] La inserción del pedido y el empuje de posiciones son dos escrituras
       sin transacción de BD. Un fallo entre ambas deja un hueco en la
       numeración (no corrompe el orden). Se envuelve en transacción cuando
       Épica 3 agregue el débito de créditos como tercera escritura
@@ -522,6 +569,14 @@ es la razón por la que hoy los roles se asignan en el seed.
 - [ ] Paginación de `GET /queue` usa `parseInt` sin validar: `?limit=999999`
       descarga toda la cola, `?limit=abc` produce NaN. Debe ser un DTO con
       `@Type(() => Number) @IsInt() @Min(1) @Max(100)` (P2)
+- [ ] Dominio y sitio público en la cuenta de Hostinger (vence oct/2026):
+      landing + /privacidad + /terminos. Los subdominios api. y app.
+      apuntan por DNS al proveedor donde corra NestJS — el hosting
+      compartido NO puede ejecutar Node + Postgres + Redis + WebSockets
+- [ ] Redactar política de privacidad y términos y condiciones. Desbloquea
+      DOS pendientes: la verificación de Google OAuth y el requisito de
+      DIACO sobre la cláusula de expiración de créditos
+- [ ] Verificar en hPanel qué plan es y cuántos sitios permite
 
 ## Épica 9 — Generación e impresión de QR
 
@@ -585,3 +640,20 @@ negocian los dueños. Se automatiza cuando duela.
 - [ ] Tablero "cuánto generaste este mes" para el venue_admin — no es una
       función bonita, es la principal herramienta de retención: la
       mensualidad compra el primer mes, los números compran el segundo
+- [ ] DECISIÓN: desplegar en Render (~$14/mes + Redis ≈ $170-250/año).
+      Precio fijo sobre facturación medida, y Postgres administrado con
+      respaldos incluidos cierra el riesgo #1 sin escribir código.
+      ANTES DE PAGAR, verificar en el sitio: (a) frecuencia y retención de
+      respaldos del plan de Postgres, (b) que se pueda restaurar desde el
+      panel, (c) costo de Redis
+- [ ] DESCARTADO: VPS propio. Ahorra ~$10/mes y convierte los respaldos,
+      el SSL y los parches de seguridad en responsabilidad permanente.
+      Reconsiderar cuando haya alguien dedicado a operación
+- [ ] Para DEMOS antes de decidir producción: túnel (Cloudflare Tunnel o
+      similar) exponiendo la API local. Cero costo, cero despliegue, se
+      apaga al terminar. No comprometer un año de servidor hasta ver la
+      reacción de los primeros locales
+- [ ] Para DEMOS antes de decidir producción: túnel (Cloudflare Tunnel o
+      similar) exponiendo la API local. Cero costo, cero despliegue, se
+      apaga al terminar. No comprometer un año de servidor hasta ver la
+      reacción de los primeros locales

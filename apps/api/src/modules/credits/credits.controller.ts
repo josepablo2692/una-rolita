@@ -4,14 +4,17 @@ import {
   Post,
   Body,
   Param,
+  ParseUUIDPipe,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { Request } from 'express';
-import { CreditsService } from './credits.service';
+import { CreditsService, VenueTransactionRow } from './credits.service';
 import { TopupCreditsDto } from './dto/topup-credits.dto';
 import { LookupCustomerDto } from './dto/lookup-customer.dto';
+import { ReverseTransactionDto } from './dto/reverse-transaction.dto';
+import { ListTransactionsDto } from './dto/list-transactions.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { VenueRolesGuard } from '../auth/guards/venue-roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -103,5 +106,104 @@ export class CreditsController {
     return {
       balance: await this.creditsService.getBalance(req.user.userId, venueId),
     };
+  }
+
+  // Historial de movimientos del local, con quién hizo cada carga.
+  //
+  // SOLO venue_admin, no staff. Ver el historial completo del local
+  // significa ver cuánto gasta cada cliente y qué hizo cada compañero:
+  // es información de administración, no de operación diaria.
+  @UseGuards(JwtAuthGuard, VenueRolesGuard)
+  @Roles('venue_admin')
+  @Get('transactions')
+  listTransactions(
+    @Param('venueId') venueId: string,
+    @Query() dto: ListTransactionsDto,
+  ): Promise<VenueTransactionRow[]> {
+    return this.creditsService.listVenueTransactions(venueId, {
+      userId: dto.userId,
+      limit: dto.limit,
+      offset: dto.offset,
+    });
+  }
+
+  // Nota de crédito: corrige un movimiento sin borrarlo.
+  //
+  // SOLO venue_admin, NUNCA staff. Es separación de funciones: quien
+  // comete el error no puede borrarlo solo. Si un mesero pudiera revertir
+  // sus propias cargas, podría cobrar en efectivo, acreditar, y revertir
+  // cuando el cliente se fue. La firma de otra persona es lo que hace que
+  // la auditoría signifique algo.
+  @UseGuards(JwtAuthGuard, VenueRolesGuard)
+  @Roles('venue_admin')
+  @Post('transactions/:transactionId/reverse')
+  async reverse(
+    @Param('venueId') venueId: string,
+    // ParseUUIDPipe: sin él, un id malformado llega hasta Postgres y
+    // produce un 500 en vez de un 400.
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+    @Body() dto: ReverseTransactionDto,
+    @Req() req: Request & { user: { userId: string } },
+  ): Promise<{
+    reversalId: string;
+    reversesTransactionId: string | null;
+    amount: number;
+    balanceAfter: number;
+    reason: string | null;
+    createdAt: Date;
+  }> {
+    const reversa = await this.creditsService.reverseTransaction({
+      venueId,
+      transactionId,
+      // Del JWT, nunca del body: la firma de quien corrige es el punto.
+      adminUserId: req.user.userId,
+      reason: dto.reason,
+      amount: dto.amount,
+    });
+
+    return {
+      reversalId: reversa.id,
+      reversesTransactionId: reversa.reversesTransactionId,
+      amount: reversa.amount,
+      balanceAfter: reversa.balanceAfter,
+      reason: reversa.reason,
+      createdAt: reversa.createdAt,
+    };
+  }
+
+  // El cliente ve SU propio historial en este local.
+  //
+  // El userId sale del token, así que no hay parámetro que manipular para
+  // ver el de otro. La proyección quita los datos del personal: al
+  // cliente no le corresponde saber qué mesero registró qué.
+  @UseGuards(JwtAuthGuard)
+  @Get('me/transactions')
+  async myTransactions(
+    @Param('venueId') venueId: string,
+    @Req() req: Request & { user: { userId: string } },
+    @Query() dto: ListTransactionsDto,
+  ): Promise<
+    Array<{
+      id: string;
+      type: string;
+      amount: number;
+      balanceAfter: number;
+      reason: string | null;
+      createdAt: Date;
+    }>
+  > {
+    const movimientos = await this.creditsService.listVenueTransactions(
+      venueId,
+      { userId: req.user.userId, limit: dto.limit, offset: dto.offset },
+    );
+
+    return movimientos.map((m) => ({
+      id: m.id,
+      type: m.type,
+      amount: m.amount,
+      balanceAfter: m.balanceAfter,
+      reason: m.reason,
+      createdAt: m.createdAt,
+    }));
   }
 }
