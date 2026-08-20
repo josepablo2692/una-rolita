@@ -1,14 +1,18 @@
 import {
   Inject,
   Injectable,
+  Logger,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  InternalServerErrorException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import {
   DataSource,
   EntityManager,
+  IsNull,
   MoreThan,
   MoreThanOrEqual,
   Repository,
@@ -21,6 +25,7 @@ import { VenueSongHistory } from './entities/venue-song-history.entity';
 import { QueueRequest } from './entities/queue-request.entity';
 import { QueueJump } from './entities/queue-jump.entity';
 import { VenueTable } from '../venues/entities/venue-table.entity';
+import { VenueSession } from '../venues/entities/venue-session.entity';
 import { User } from '../auth/entities/user.entity';
 import { VenuesService } from '../venues/venues.service';
 import { CreditsService, LedgerLine } from '../credits/credits.service';
@@ -55,8 +60,54 @@ else
 end
 `;
 
+// Postgres devuelve COUNT y SUM como texto (son bigint/numeric, que no
+// caben garantizados en un number de JS). Se tipan como string y se
+// convierten explícitamente: si los declaráramos number, TypeScript nos
+// dejaría sumarlos y obtendríamos "12" en vez de 3.
+interface FilaConteoPedidos {
+  total: string;
+  sonadas: string;
+  saltadas: string;
+  canceladas: string;
+  en_cola: string;
+}
+
+interface FilaConteoCreditos {
+  gastado: string;
+  reembolsado: string;
+}
+
+interface FilaSesionVencida {
+  id: string;
+  venue_id: string;
+}
+
+// Lo que devuelve el cierre y las consultas de noche. Vive aquí, junto a
+// quien lo produce, para que el Controller no invente su propia forma.
+export interface ResumenNoche {
+  sessionId: string;
+  venueId: string;
+  openedAt: Date;
+  closedAt: Date | null;
+  closedByUserId: string | null;
+  closedAutomatically: boolean;
+  abierta: boolean;
+  duracionMinutos: number;
+  cancionesPedidas: number;
+  cancionesSonadas: number;
+  cancionesSaltadas: number;
+  cancionesCanceladas: number;
+  cancionesEnCola: number;
+  creditosGastados: number;
+  creditosReembolsados: number;
+  pedidosReembolsadosAlCerrar: number | null;
+  creditosDevueltosAlCerrar: number | null;
+}
+
 @Injectable()
 export class QueueService {
+  private readonly logger = new Logger(QueueService.name);
+
   constructor(
     @Inject(REDIS_CLIENT)
     private readonly redis: Redis,
@@ -133,17 +184,30 @@ export class QueueService {
       // Todo lo que sigue ocurre o no ocurre: cobrar, escribir el libro
       // mayor y meter la canción en la cola son una sola operación.
       saved = await this.dataSource.transaction(async (manager) => {
-        // ---- CANDADO 1: el crédito -------------------------------
-        // Primero el crédito y después la cola, SIEMPRE en ese orden.
-        // Si dos operaciones tomaran los recursos al revés, se
-        // esperarían para siempre (interbloqueo).
+        // ---- ORDEN DE CANDADOS: sesión → crédito → usuario → cola ---
+        //
+        // TODA operación que toque estos recursos los toma en ESTE orden.
+        // Si una los tomara al revés (por ejemplo crédito y después
+        // sesión), dos transacciones podrían quedarse esperándose para
+        // siempre: cada una con lo que la otra necesita. Eso es un
+        // interbloqueo, y la base lo resuelve matando una transacción.
+        //
+        // ---- CANDADO 1: la sesión --------------------------------
+        // La noche a la que pertenece este pedido. Si no hay ninguna
+        // abierta, se abre sola.
+        //
+        // Bloquear la fila aquí es lo que impide que un pedido se cuele
+        // en una noche que el DJ está cerrando en este mismo instante.
+        const sesion = await this.resolverSesionAbierta(manager, venueId);
+
+        // ---- CANDADO 2: el crédito -------------------------------
         const cuenta = await this.creditsService.ensureAndLockAccount(
           manager,
           userId,
           venueId,
         );
 
-        // ---- CANDADO 2: el usuario -------------------------------
+        // ---- CANDADO 3: el usuario -------------------------------
         // La canción gratis vive en users.free_song_used y es UNA por
         // persona en toda la plataforma, no una por local. Se bloquea la
         // fila para que dos pedidos simultáneos no la usen dos veces.
@@ -192,13 +256,14 @@ export class QueueService {
           await this.assertUserCanPayForJump(userId, venueId);
         }
 
-        // ---- Ahora sí, la cola ------------------------------------
+        // ---- CANDADO 4: la cola -----------------------------------
         const position = esSalto
           ? await this.calculateJumpPosition(manager, venueId)
           : await this.calculateNextPosition(manager, venueId);
 
         const queueRequest = manager.create(QueueRequest, {
           venueId,
+          sessionId: sesion.id,
           tableId,
           userId,
           songId: song.id,
@@ -207,6 +272,12 @@ export class QueueService {
           paidAmount: esGratis ? 0 : precio,
         });
         const guardado = await manager.save(queueRequest);
+
+        // Marca actividad en la sesión. Es lo que usa el job de cierre
+        // automático para saber si la noche sigue viva Y con qué hora
+        // cerrarla si nadie lo hizo.
+        sesion.lastActivityAt = new Date();
+        await manager.save(sesion);
 
         // El cobro apunta al pedido, por eso va después de crearlo: no se
         // puede referenciar algo que todavía no existe.
@@ -286,6 +357,20 @@ export class QueueService {
       );
     }
 
+    // Guard Clause: solo suena lo que está en cola.
+    //
+    // Sin esto, un pedido de una noche ya cerrada —que quedó en
+    // 'skipped' y YA fue reembolsado— podría marcarse como sonado. El
+    // cliente se habría quedado con el crédito devuelto Y con la
+    // canción, y el historial del local contaría una reproducción que
+    // pertenecía a otra noche. Es la misma defensa que ya tenían
+    // cancelRequest y skipRequest.
+    if (request.status !== 'queued') {
+      throw new BadRequestException(
+        `No se puede marcar como reproducido un pedido en estado "${request.status}"`,
+      );
+    }
+
     request.status = 'played';
     request.playedAt = new Date();
     await this.queueRequestRepository.save(request);
@@ -295,6 +380,17 @@ export class QueueService {
       songId: request.songId,
     });
     await this.historyRepository.save(history);
+
+    // Una canción sonando también es señal de vida. Sin esto, una noche
+    // en la que el DJ solo reproduce lo que ya estaba en cola —sin
+    // pedidos nuevos— se cerraría sola con la sala llena.
+    await this.dataSource.query(
+      `UPDATE venue_sessions
+          SET last_activity_at = now()
+        WHERE id = $1 AND closed_at IS NULL`,
+      [request.sessionId],
+    );
+
     const updatedQueue = await this.findQueueByVenue(request.venueId);
     this.queueGateway.notifyQueueUpdated(request.venueId, updatedQueue); // <- notifica que ya sono
     return request;
@@ -395,41 +491,8 @@ export class QueueService {
         );
       }
 
-      const { neto, fueGratis } = await this.netoCobrado(manager, id);
-
-      // Si se cobró algo, se devuelve completo. `neto` es negativo, así
-      // que el reembolso es su valor absoluto.
-      if (neto < 0) {
-        await this.creditsService.applyLines({
-          userId: request.userId,
-          venueId,
-          manager, // dentro de NUESTRA transacción
-          lines: [
-            {
-              type: 'refund',
-              amount: Math.abs(neto),
-              queueRequestId: id,
-            },
-          ],
-        });
-      }
-
-      // Canción gratis saltada por el artista: no hay crédito que
-      // devolver (el neto fue cero), pero el cliente perdió su promoción
-      // sin recibir nada. Como el local incumplió, se le restituye.
-      if (fueGratis) {
-        const usuario = await manager.findOne(User, {
-          where: { id: request.userId },
-          lock: { mode: 'pessimistic_write' },
-        });
-        if (usuario) {
-          usuario.freeSongUsed = false;
-          await manager.save(usuario);
-        }
-      }
-
-      request.status = 'skipped';
-      return manager.save(request);
+      await this.saltarYReembolsar(manager, request);
+      return request;
     });
 
     // El aviso, después del commit.
@@ -440,9 +503,374 @@ export class QueueService {
   }
 
   // ==============================================================
+  // Cierre de la noche
+  // ==============================================================
+
+  // Cerrar la noche — decisión del DJ o del administrador del local.
+  //
+  // Cerrar NO es solo poner una fecha: la cola que quedó pendiente nunca
+  // va a sonar, y esos créditos ya están cobrados. Por eso el cierre
+  // salta cada pedido pendiente y lo reembolsa (ADR 0007): el local no
+  // entregó el servicio, igual que en un skip.
+  //
+  // Todo ocurre en UNA transacción. Si el reembolso número 7 falla, no
+  // queremos una noche cerrada con seis clientes devueltos y el resto no.
+  async closeSession(params: {
+    venueId: string;
+    closedByUserId: string | null;
+    automatic?: boolean;
+    // Solo lo usa el cierre automático. Ver el comentario de abajo.
+    closedAt?: Date;
+  }): Promise<ResumenNoche> {
+    const { venueId, closedByUserId, automatic = false } = params;
+
+    const resumen = await this.dataSource.transaction(async (manager) => {
+      // ---- CANDADO 1: la sesión --------------------------------
+      // Mismo orden que createRequest: sesión → crédito → usuario.
+      // Además serializa los cierres entre sí: dos personas apretando
+      // el botón a la vez no reembolsan dos veces.
+      const sesion = await manager.findOne(VenueSession, {
+        where: { venueId, closedAt: IsNull() },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!sesion) {
+        throw new BadRequestException(
+          'No hay una noche abierta en este negocio',
+        );
+      }
+
+      // Los pedidos que quedaron colgados. Solo los de ESTA sesión: si
+      // por algún motivo quedaron filas viejas de otra noche, no son
+      // asunto de este cierre.
+      const pendientes = await manager.find(QueueRequest, {
+        where: { sessionId: sesion.id, status: 'queued' as const },
+        order: { position: 'ASC' },
+      });
+
+      let creditosDevueltos = 0;
+      for (const pedido of pendientes) {
+        creditosDevueltos += await this.saltarYReembolsar(manager, pedido);
+      }
+
+      // POR QUÉ el cierre automático usa last_activity_at y no "ahora":
+      // el job corre cada media hora. Si cerrara con su propio reloj,
+      // una noche que terminó de verdad a las 2:00 a.m. y que el job
+      // detecta a las 8:00 a.m. mediría seis horas de más. La métrica de
+      // duración quedaría inservible justo en los locales peor operados,
+      // que son los que más nos interesa medir.
+      //
+      // POR QUÉ la hora la pone Postgres y no JavaScript:
+      // `opened_at` lo escribe la base con now(). Si `closed_at` lo
+      // pusiera Node con new Date(), estaríamos comparando dos relojes
+      // distintos — el del contenedor de la base y el del servidor. Con
+      // unos cientos de milisegundos de desfase (Docker en Windows los
+      // tiene), una noche que abre y cierra casi seguido queda con
+      // closed_at ANTERIOR a opened_at, y el CHECK de la base la rechaza.
+      //
+      // Regla: dos instantes que se van a comparar entre sí tienen que
+      // salir del mismo reloj. Aquí manda el de la base.
+      const [cerrada] = await manager.query<Array<{ closed_at: Date }>>(
+        `UPDATE venue_sessions
+            SET closed_at            = COALESCE($2::timestamptz, now()),
+                closed_by_user_id    = $3,
+                closed_automatically = $4
+          WHERE id = $1
+        RETURNING closed_at`,
+        [sesion.id, params.closedAt ?? null, closedByUserId, automatic],
+      );
+
+      // La entidad en memoria quedó desactualizada tras el UPDATE crudo;
+      // se sincroniza para que el resumen mida la duración correcta.
+      sesion.closedAt = cerrada.closed_at;
+      sesion.closedByUserId = closedByUserId;
+      sesion.closedAutomatically = automatic;
+
+      return this.construirResumen(manager, sesion, {
+        pedidosReembolsados: pendientes.length,
+        creditosDevueltos,
+      });
+    });
+
+    // Los avisos, después del commit.
+    const colaVacia = await this.findQueueByVenue(venueId);
+    this.queueGateway.notifyQueueUpdated(venueId, colaVacia);
+    this.queueGateway.notifyNightClosed(venueId, {
+      sessionId: resumen.sessionId,
+      closedAt: resumen.closedAt as Date,
+      automatico: automatic,
+    });
+
+    return resumen;
+  }
+
+  // Red de seguridad: cierra las noches que nadie cerró.
+  //
+  // El botón de cerrar existe, pero un local con clientes encima no
+  // siempre lo aprieta. Si nadie cerrara nunca, la cola de anoche
+  // aparecería mañana y los reembolsos jamás saldrían.
+  //
+  // Corre cada media hora, no cada minuto: el umbral se mide en horas,
+  // así que revisar más seguido solo gasta consultas. Y como cierra con
+  // last_activity_at, media hora de retraso no distorsiona la métrica.
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async cerrarSesionesInactivas(): Promise<number> {
+    // El umbral es POR LOCAL (venues.session_timeout_hours): un bar y un
+    // gimnasio no tienen el mismo ritmo. Por eso el JOIN — no se puede
+    // resolver con una constante.
+    const vencidas = await this.dataSource.query<FilaSesionVencida[]>(
+      `SELECT s.id, s.venue_id
+         FROM venue_sessions s
+         JOIN venues v ON v.id = s.venue_id
+        WHERE s.closed_at IS NULL
+          AND s.last_activity_at < now() - (v.session_timeout_hours * INTERVAL '1 hour')`,
+    );
+
+    let cerradas = 0;
+
+    for (const fila of vencidas) {
+      try {
+        // Se relee la sesión dentro de closeSession con su candado; aquí
+        // solo necesitamos last_activity_at para la hora de cierre.
+        const sesion = await this.dataSource
+          .getRepository(VenueSession)
+          .findOne({ where: { id: fila.id } });
+
+        if (!sesion || sesion.closedAt) {
+          continue; // alguien la cerró entre la consulta y este momento
+        }
+
+        await this.closeSession({
+          venueId: fila.venue_id,
+          closedByUserId: null, // nadie la cerró: la cerró el sistema
+          automatic: true,
+          closedAt: sesion.lastActivityAt,
+        });
+        cerradas += 1;
+      } catch (error) {
+        // Un local que falla no puede dejar sin cerrar a los demás. Se
+        // registra y se sigue: el job vuelve a intentarlo en 30 minutos.
+        this.logger.error(
+          `No se pudo cerrar automáticamente la noche del negocio ${fila.venue_id}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+
+    if (cerradas > 0) {
+      this.logger.warn(
+        `Cierre automático: ${cerradas} noche(s) cerradas por inactividad`,
+      );
+    }
+
+    return cerradas;
+  }
+
+  // La noche en curso, con sus números en vivo. Es lo que mira el DJ
+  // antes de apretar el botón: cuánto lleva abierta y qué va a pasar si
+  // cierra (cuántos pedidos pendientes se van a reembolsar).
+  async getCurrentSession(venueId: string): Promise<ResumenNoche> {
+    const sesion = await this.dataSource.getRepository(VenueSession).findOne({
+      where: { venueId, closedAt: IsNull() },
+    });
+
+    if (!sesion) {
+      throw new NotFoundException('No hay una noche abierta en este negocio');
+    }
+
+    return this.construirResumen(this.dataSource.manager, sesion);
+  }
+
+  // El resumen de una noche ya cerrada. El venueId va en el WHERE: una
+  // sesión de otro local simplemente no existe para esta consulta.
+  async getSessionSummary(
+    venueId: string,
+    sessionId: string,
+  ): Promise<ResumenNoche> {
+    const sesion = await this.dataSource.getRepository(VenueSession).findOne({
+      where: { id: sessionId, venueId },
+    });
+
+    if (!sesion) {
+      throw new NotFoundException(
+        `No se encontró la noche ${sessionId} en este negocio`,
+      );
+    }
+
+    return this.construirResumen(this.dataSource.manager, sesion);
+  }
+
+  // ==============================================================
   // Métodos privados: cada uno resuelve UNA sola regla de negocio
   // (Single Responsibility a nivel de método, no solo de clase).
   // ==============================================================
+
+  // Saltar un pedido y devolver lo que se le cobró. Devuelve cuántos
+  // créditos se reembolsaron.
+  //
+  // Vive aparte porque tiene DOS usuarios con la misma regla: el skip
+  // individual del DJ y el cierre de la noche. Si estuviera duplicado,
+  // el día que cambie la política de reembolsos habría que acordarse de
+  // los dos lugares — y ese es exactamente el bug que no se nota hasta
+  // que un cliente reclama.
+  //
+  // Asume que el pedido ya fue validado (existe, es del local, está en
+  // estado 'queued'). No abre transacción: participa en la del que llama.
+  private async saltarYReembolsar(
+    manager: EntityManager,
+    request: QueueRequest,
+  ): Promise<number> {
+    const { neto, fueGratis } = await this.netoCobrado(manager, request.id);
+
+    // Si se cobró algo, se devuelve completo. `neto` es negativo, así
+    // que el reembolso es su valor absoluto.
+    let devuelto = 0;
+    if (neto < 0) {
+      devuelto = Math.abs(neto);
+      await this.creditsService.applyLines({
+        userId: request.userId,
+        venueId: request.venueId,
+        manager, // dentro de la transacción del que llama
+        lines: [
+          {
+            type: 'refund',
+            amount: devuelto,
+            queueRequestId: request.id,
+          },
+        ],
+      });
+    }
+
+    // Canción gratis saltada por el local: no hay crédito que devolver
+    // (el neto fue cero), pero el cliente perdió su promoción sin recibir
+    // nada. Como el local incumplió, se le restituye.
+    if (fueGratis) {
+      const usuario = await manager.findOne(User, {
+        where: { id: request.userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (usuario) {
+        usuario.freeSongUsed = false;
+        await manager.save(usuario);
+      }
+    }
+
+    request.status = 'skipped';
+    await manager.save(request);
+
+    return devuelto;
+  }
+
+  // Arma las métricas de una noche, abierta o cerrada.
+  //
+  // Son dos consultas y no una porque miden cosas distintas: los pedidos
+  // cuelgan de la sesión, pero los movimientos de crédito cuelgan del
+  // pedido. Unirlas en un solo SELECT multiplicaría filas y los conteos
+  // saldrían inflados — el error clásico de contar sobre un JOIN.
+  private async construirResumen(
+    manager: EntityManager,
+    sesion: VenueSession,
+    extra?: { pedidosReembolsados: number; creditosDevueltos: number },
+  ): Promise<ResumenNoche> {
+    const [pedidos] = await manager.query<FilaConteoPedidos[]>(
+      `SELECT COUNT(*)                                        AS total,
+              COUNT(*) FILTER (WHERE status = 'played')        AS sonadas,
+              COUNT(*) FILTER (WHERE status = 'skipped')       AS saltadas,
+              COUNT(*) FILTER (WHERE status = 'cancelled')     AS canceladas,
+              COUNT(*) FILTER (WHERE status = 'queued')        AS en_cola
+         FROM queue_requests
+        WHERE session_id = $1`,
+      [sesion.id],
+    );
+
+    // Los cobros son negativos y los reembolsos positivos: por eso el
+    // gastado lleva ABS y se filtra por signo, no por tipo. Si mañana
+    // aparece un tipo de cobro nuevo, esta consulta ya lo cuenta.
+    const [creditos] = await manager.query<FilaConteoCreditos[]>(
+      `SELECT COALESCE(ABS(SUM(t.amount) FILTER (WHERE t.amount < 0)), 0) AS gastado,
+              COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'refund'), 0) AS reembolsado
+         FROM credit_transactions t
+         JOIN queue_requests q ON q.id = t.queue_request_id
+        WHERE q.session_id = $1`,
+      [sesion.id],
+    );
+
+    const hasta = sesion.closedAt ?? new Date();
+    const duracionMinutos = Math.round(
+      (hasta.getTime() - new Date(sesion.openedAt).getTime()) / 60000,
+    );
+
+    return {
+      sessionId: sesion.id,
+      venueId: sesion.venueId,
+      openedAt: sesion.openedAt,
+      closedAt: sesion.closedAt,
+      closedByUserId: sesion.closedByUserId,
+      closedAutomatically: sesion.closedAutomatically,
+      abierta: sesion.closedAt === null,
+      duracionMinutos,
+      cancionesPedidas: Number(pedidos.total),
+      cancionesSonadas: Number(pedidos.sonadas),
+      cancionesSaltadas: Number(pedidos.saltadas),
+      cancionesCanceladas: Number(pedidos.canceladas),
+      cancionesEnCola: Number(pedidos.en_cola),
+      creditosGastados: Number(creditos.gastado),
+      creditosReembolsados: Number(creditos.reembolsado),
+      // Solo el cierre sabe cuántos reembolsó ÉL. En un resumen
+      // consultado después, esos números ya están dentro de los totales.
+      pedidosReembolsadosAlCerrar: extra?.pedidosReembolsados ?? null,
+      creditosDevueltosAlCerrar: extra?.creditosDevueltos ?? null,
+    };
+  }
+
+  // Devuelve la sesión abierta del local, abriéndola si no existe.
+  //
+  // APERTURA PEREZOSA: la noche empieza cuando alguien pide música, no
+  // cuando alguien aprieta un botón. Eso le quita un paso al DJ y evita
+  // que un olvido deje al local sin poder recibir pedidos.
+  //
+  // El ON CONFLICT DO NOTHING se apoya en el índice único parcial de la
+  // base (una sola sesión sin closed_at por venue): si dos peticiones
+  // intentan abrir la noche a la vez, una gana y la otra no rompe nada.
+  //
+  // El bloqueo de la fila NO es decorativo. Sin él, cerrar la noche y
+  // pedir una canción pueden pisarse: el cierre marca closed_at mientras
+  // el pedido ya leyó esa misma sesión como abierta, y el pedido queda
+  // colgado de una noche cerrada — sin reembolso y sin salir nunca.
+  //
+  // Con el bloqueo, el pedido espera al cierre; cuando entra, ya no ve
+  // sesión abierta y abre una nueva. Eso es lo correcto: una canción
+  // pedida después del cierre pertenece a la noche siguiente.
+  private async resolverSesionAbierta(
+    manager: EntityManager,
+    venueId: string,
+  ): Promise<VenueSession> {
+    // Dos vueltas, no una. La primera puede quedarse vacía por una razón
+    // legítima: había una noche abierta, esperamos su candado, y quien lo
+    // tenía la estaba cerrando. Al soltarlo ya no hay sesión abierta.
+    // En la segunda vuelta el INSERT sí crea la noche nueva.
+    for (let intento = 1; intento <= 2; intento++) {
+      await manager.query(
+        `INSERT INTO venue_sessions (venue_id)
+         VALUES ($1)
+         ON CONFLICT DO NOTHING`,
+        [venueId],
+      );
+
+      const sesion = await manager.findOne(VenueSession, {
+        where: { venueId, closedAt: IsNull() },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (sesion) {
+        return sesion;
+      }
+    }
+
+    throw new InternalServerErrorException(
+      'No se pudo abrir la sesión de la noche para este negocio',
+    );
+  }
 
   // Qué se le cobró realmente a este pedido.
   //

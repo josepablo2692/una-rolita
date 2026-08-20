@@ -88,6 +88,12 @@ export class Venue {
   @Column({ name: 'credit_expiry_months', type: 'int', default: 3 })
   creditExpiryMonths!: number;
 
+  // Horas sin actividad tras las cuales el sistema cierra la noche solo.
+  // Configurable por local: un bar cierra a las 2 a.m., un gimnasio a las
+  // 9 p.m., y sus ritmos de inactividad no se parecen.
+  @Column({ name: 'session_timeout_hours', type: 'int', default: 6 })
+  sessionTimeoutHours!: number;
+
   @Column({ name: 'bank_account_info', type: 'jsonb', nullable: true })
   bankAccountInfo!: Record<string, unknown> | null;
 

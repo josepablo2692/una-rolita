@@ -5,11 +5,12 @@ import {
   Patch,
   Body,
   Param,
+  ParseUUIDPipe,
   Req,
   UseGuards,
   Query,
 } from '@nestjs/common';
-import { QueueService } from './queue.service';
+import { QueueService, ResumenNoche } from './queue.service';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
 import { QueueRequest } from './entities/queue-request.entity';
 import { Request } from 'express';
@@ -98,5 +99,48 @@ export class QueueController {
     @Param('requestId') requestId: string,
   ): Promise<QueueRequest> {
     return this.queueService.skipRequest(venueId, requestId);
+  }
+
+  // Cerrar la noche — acción de operación, y de las caras: reembolsa
+  // TODA la cola pendiente. Por eso exige rol en ESTE local.
+  //
+  // Es POST y no PATCH porque no está modificando un recurso que el
+  // cliente identificó: le está pidiendo al sistema que ejecute un
+  // proceso (saltar, reembolsar, cerrar, medir) y le devuelva el
+  // resultado.
+  @UseGuards(JwtAuthGuard, VenueRolesGuard)
+  @Roles('dj', 'venue_admin')
+  @Post('close-night')
+  closeNight(
+    @Param('venueId') venueId: string,
+    @Req() req: Request & { user: { userId: string } },
+  ): Promise<ResumenNoche> {
+    return this.queueService.closeSession({
+      venueId,
+      closedByUserId: req.user.userId,
+    });
+  }
+
+  // La noche en curso, con sus números en vivo. Se declara ANTES que la
+  // ruta con :sessionId: Nest resuelve por orden de declaración, y si
+  // fuera al revés intentaría leer "current" como un UUID.
+  @UseGuards(JwtAuthGuard, VenueRolesGuard)
+  @Roles('dj', 'venue_admin')
+  @Get('sessions/current')
+  currentSession(@Param('venueId') venueId: string): Promise<ResumenNoche> {
+    return this.queueService.getCurrentSession(venueId);
+  }
+
+  // El resumen de una noche cualquiera. ParseUUIDPipe rechaza basura
+  // antes de que llegue a la base: sin él, un id inválido se convierte
+  // en un 500 de Postgres en vez de un 400 honesto.
+  @UseGuards(JwtAuthGuard, VenueRolesGuard)
+  @Roles('dj', 'venue_admin')
+  @Get('sessions/:sessionId')
+  sessionSummary(
+    @Param('venueId') venueId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+  ): Promise<ResumenNoche> {
+    return this.queueService.getSessionSummary(venueId, sessionId);
   }
 }

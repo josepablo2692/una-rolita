@@ -115,8 +115,8 @@ de "ahorita no es necesario".
 | #   | Qué                                                       | PR      |
 | --- | --------------------------------------------------------- | ------- |
 | 1   | Reversión (nota de crédito) + auditoría visible           | PR 3 ✅ |
-| 2   | Cierre de noche (`venue_sessions` + cierre automático)    | PR 4    |
-| 3   | Expiración de créditos por inactividad                    | PR 5    |
+| 2   | Cierre de noche (`venue_sessions` + cierre automático)    | PR 4 ✅ |
+| 3   | Expiración de créditos por inactividad                    | PR 5 ←  |
 | 4   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 6    |
 
 **Bloqueado por causa externa — NO es deuda nuestra:**
@@ -340,7 +340,7 @@ LEFT JOIN credit_transactions ct ON ct.credit_account_id = ca.id
 HAVING ca.balance <> COALESCE(SUM(ct.amount), 0);
 `
 
-### Cierre de noche — PR 3
+### Cierre de noche — PR 4 ✅
 
 Detectado simulando la cola de 50: a las 2 a.m. el bar cierra con pedidos
 en cola, el DJ apaga y se va, y esos pedidos quedan en `queued` PARA
@@ -349,24 +349,40 @@ SIEMPRE. Pagaron, no escucharon nada, y nadie disparó un reembolso.
 Y el día siguiente es otra cosa: otra playlist, otro cantante, otras
 canciones. La cola no es perpetua, **pertenece a una sesión**.
 
-- [ ] Tabla `venue_sessions`: venue, `opened_at`, `closed_at`,
+- [x] Tabla `venue_sessions`: venue, `opened_at`, `closed_at`,
       `closed_by_user_id`, `closed_automatically` (bool). Es lo que
       permite saber cuánto duró la noche — insumo directo de Épica 8
-- [ ] `queue_requests` se asocia a la sesión abierta del venue
-- [ ] Botón "Cerrar la noche" (rol `dj` o `venue_admin`): salta todos los
-      pedidos pendientes y dispara el reembolso de cada uno con la regla
-      de ADR 0007 (el local no entregó)
-- [ ] **El cliente TIENE que ver su reembolso.** Un crédito que vuelve en
-      silencio no genera confianza; uno anunciado sí. Aviso por WebSocket + historial visible en su pantalla
-- [ ] **RED DE SEGURIDAD — el admin se va a olvidar de cerrar, y eso no
+- [x] `queue_requests` se asocia a la sesión abierta del venue.
+      **Apertura perezosa**: la noche se abre sola con el primer pedido
+- [x] `POST /venues/:id/queue/close-night` (rol `dj` o `venue_admin`):
+      salta todos los pedidos pendientes y dispara el reembolso de cada
+      uno con la regla de ADR 0007 (el local no entregó). El BOTÓN en sí
+      es Épica 6 — no hay front-end
+- [x] Aviso por WebSocket del reembolso (`night:closed`). El **historial
+      visible en la pantalla del cliente** queda para Épica 6: sin
+      front-end no hay dónde mostrarlo
+- [x] **RED DE SEGURIDAD — el admin se va a olvidar de cerrar, y eso no
       nos puede perjudicar.** Cierre automático por inactividad: un job
       programado (`@nestjs/schedule`) cierra las sesiones sin actividad
-      por N horas (configurable por venue), marcando
-      `closed_automatically = true` para distinguirlas en las métricas.
-      Una sesión mal cerrada NO debe contaminar la duración promedio
-- [ ] Un pedido de una sesión cerrada nunca es reproducible ni cancelable
-- [ ] Métrica de sesión: duración, canciones sonadas, créditos emitidos y
-      gastados, reembolsos. Es el "cuánto generaste hoy" del admin
+      por N horas (`venues.session_timeout_hours`), marcando
+      `closed_automatically = true`. Cierra con `last_activity_at`, NO
+      con la hora del job: una sesión mal cerrada no contamina la
+      duración promedio
+- [x] Un pedido de una sesión cerrada nunca es reproducible ni cancelable
+      (guard de estado en `markAsPlayed`, `cancelRequest` y `skipRequest`)
+- [x] Métrica de sesión: duración, canciones pedidas/sonadas/saltadas,
+      créditos gastados y reembolsados.
+      `GET .../queue/sessions/current` y `GET .../queue/sessions/:id`
+
+**Decisiones que dejó este PR:**
+
+- **Orden de candados: sesión → crédito → usuario → cola.** Toda
+  operación que toque estos recursos los toma en ese orden. Cerrar la
+  noche y pedir una canción los tomaban al revés: interbloqueo real
+- **Un instante que se compara con otro sale del mismo reloj.**
+  `opened_at` lo escribe Postgres, así que `closed_at` también. Mezclar
+  `now()` con `new Date()` produjo noches que cerraban antes de abrir
+  (lo atrapó el CHECK `venue_sessions_cierre_posterior`)
 
 ## Épica 4 — Reproducción: Spotify o DJ en vivo
 

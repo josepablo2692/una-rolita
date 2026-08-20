@@ -39,4 +39,17 @@ export class QueueGateway {
   notifyQueueUpdated(venueId: string, queue: QueueRequest[]): void {
     this.server.to(`venue:${venueId}`).emit('queue:updated', queue);
   }
+
+  // Aviso de que la noche se cerró.
+  //
+  // Es distinto de 'queue:updated' a propósito: ahí la cola cambió, aquí
+  // el local dejó de recibir música. El cliente que tenía un pedido en
+  // cola necesita saber que le devolvimos los créditos, y una cola vacía
+  // no se lo dice — parecería que su canción simplemente ya sonó.
+  notifyNightClosed(
+    venueId: string,
+    resumen: { sessionId: string; closedAt: Date; automatico: boolean },
+  ): void {
+    this.server.to(`venue:${venueId}`).emit('night:closed', resumen);
+  }
 }

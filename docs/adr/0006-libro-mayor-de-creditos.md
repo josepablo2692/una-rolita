@@ -142,6 +142,14 @@ condiciones aceptados por el usuario. Se registra la versión aceptada
 demostrar, ante una auditoría, qué política aceptó cada cliente y
 cuándo.
 
+**Corrección posterior — orden del ledger**
+
+El replay del ledger que promete este ADR exige un orden estricto, y
+`created_at` no lo da: TypeORM lo llena con un `Date` de JavaScript
+(milisegundos), así que renglones de una misma operación empatan y el
+`ORDER BY` desempata al azar. Se agrega `seq BIGSERIAL UNIQUE`.
+**Toda consulta de historial ordena por `seq`, nunca por `created_at`.**
+
 ## Alternativas descartadas
 
 - **`balance` mutable en `users`.** Sin historial no hay auditoría, ni

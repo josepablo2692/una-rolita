@@ -26,6 +26,11 @@ CREATE TABLE venues (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    -- Horas sin actividad tras las cuales el sistema cierra la noche solo.
+    -- Configurable por local: un bar cierra a las 2 a.m., un gimnasio a
+    -- las 9 p.m., y sus ritmos de inactividad no se parecen.
+    session_timeout_hours INT NOT NULL DEFAULT 6 CHECK (session_timeout_hours > 0),
+
     -- Los precios se cobran en créditos ENTEROS (1 crédito = Q1), ver ADR 0006.
     -- Si el negocio algún día necesita centavos, primero hay que rediseñar la
     -- unidad del saldo. Reemplaza el ALTER TABLE que se corrió a mano y nunca
@@ -137,12 +142,65 @@ CREATE TABLE venue_song_history (
 
 
 -- ------------------------------------------------------------
+-- Sesiones de noche
+-- ------------------------------------------------------------
+
+-- Una "noche" del local. La cola NO es perpetua: pertenece a una sesión.
+-- Al día siguiente hay otra playlist, otro cantante, otras canciones.
+--
+-- La sesión se abre SOLA con el primer pedido (apertura perezosa): la
+-- noche empieza cuando alguien pide música, no cuando alguien aprieta un
+-- botón. El cierre sí es explícito, porque mueve dinero.
+--
+-- Va ANTES de queue_requests porque esa tabla la referencia.
+CREATE TABLE venue_sessions (
+    id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    venue_id             UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+
+    opened_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Última vez que pasó algo en esta sesión. Es lo que usa el job para
+    -- decidir si cerrar, Y la hora con la que cierra: si usara la hora
+    -- del job, una noche de 4h30m que nadie cerró mediría 8h30m.
+    last_activity_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    closed_at            TIMESTAMPTZ,
+    closed_by_user_id    UUID REFERENCES users(id),
+
+    -- Distingue "el DJ cerró" de "el sistema cerró porque se olvidaron".
+    -- Es un dato de calidad de operación, no solo un detalle técnico.
+    closed_automatically BOOLEAN NOT NULL DEFAULT false,
+
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Coherencia básica: no se puede cerrar antes de abrir.
+    CONSTRAINT venue_sessions_cierre_posterior
+        CHECK (closed_at IS NULL OR closed_at >= opened_at)
+);
+
+-- UN local tiene COMO MÁXIMO UNA sesión abierta.
+-- Índice único PARCIAL: solo aplica a las filas sin closed_at, así que no
+-- estorba al historial de sesiones cerradas. Lo garantiza Postgres, no el
+-- código — es imposible abrir dos noches a la vez.
+CREATE UNIQUE INDEX idx_venue_sessions_una_abierta
+    ON venue_sessions (venue_id) WHERE closed_at IS NULL;
+
+-- Para el job de cierre automático: solo le importan las abiertas.
+CREATE INDEX idx_venue_sessions_inactivas
+    ON venue_sessions (last_activity_at) WHERE closed_at IS NULL;
+
+-- Historial de sesiones del local, más reciente primero.
+CREATE INDEX idx_venue_sessions_venue
+    ON venue_sessions (venue_id, opened_at DESC);
+
+-- ------------------------------------------------------------
 -- Cola de pedidos
 -- ------------------------------------------------------------
 
 CREATE TABLE queue_requests (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     venue_id        UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+    session_id      UUID NOT NULL REFERENCES venue_sessions(id), -- a qué noche pertenece
     table_id        UUID NOT NULL REFERENCES tables(id),
     user_id         UUID NOT NULL REFERENCES users(id),
     song_id         UUID NOT NULL REFERENCES songs(id),
