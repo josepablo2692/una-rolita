@@ -275,7 +275,10 @@ describe('Cobro al pedir canción (e2e)', () => {
 
     const movimientos = await dataSource.getRepository(CreditTransaction).find({
       where: { creditAccountId: cuenta.id },
-      order: { createdAt: 'ASC' },
+      // Por `seq` y no por `createdAt`: los dos renglones se insertan
+      // dentro del mismo milisegundo, así que sus timestamps empatan y el
+      // orden sería aleatorio. La secuencia de la base nunca empata.
+      order: { seq: 'ASC' },
     });
 
     // Dos renglones, no cero: la promoción queda ESCRITA. Si solo

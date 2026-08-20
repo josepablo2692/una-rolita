@@ -240,6 +240,19 @@ CREATE TABLE credit_transactions (
     queue_request_id        UUID REFERENCES queue_requests(id),      -- traza el cobro al pedido
     expires_at              TIMESTAMPTZ,                             -- hoy sin uso; preserva el camino a lotes FIFO
     idempotency_key         VARCHAR(100),                            -- antifraude de doble clic
+
+    -- ORDEN ESTRICTO DE INSERCIÓN. Necesario porque created_at NO sirve
+    -- para ordenar: TypeORM lo llena con un Date de JavaScript, que tiene
+    -- precisión de MILISEGUNDOS. Los dos renglones de la canción gratis
+    -- (el regalo y el cobro) se insertan dentro del mismo milisegundo, así
+    -- que quedan con timestamps idénticos y el ORDER BY desempata al azar.
+    -- Un libro mayor sin orden estricto no es un libro mayor: el cliente
+    -- vería el cobro antes del regalo y el replay del ledger sería ambiguo.
+    seq                     BIGSERIAL NOT NULL UNIQUE,
+     -- Por qué se hizo este movimiento. OBLIGATORIO en las reversas: una
+    -- corrección sin explicación no sirve para auditar. Opcional en el
+    -- resto, aunque también sirve para justificar una carga promocional.
+    reason                  VARCHAR(255),
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT credit_transactions_amount_not_zero CHECK (amount <> 0),
@@ -251,8 +264,10 @@ CREATE TABLE credit_transactions (
 );
 
 -- Consulta principal: historial de una cuenta, más reciente primero.
-CREATE INDEX idx_credit_transactions_account_created
-    ON credit_transactions (credit_account_id, created_at DESC);
+-- Se ordena por `seq` y no por `created_at`, porque created_at empata
+-- entre renglones de la misma operación.
+CREATE INDEX idx_credit_transactions_account_seq
+    ON credit_transactions (credit_account_id, seq DESC);
 
 -- "Qué cobros generó este pedido" — necesario para reembolsar.
 CREATE INDEX idx_credit_transactions_queue_request

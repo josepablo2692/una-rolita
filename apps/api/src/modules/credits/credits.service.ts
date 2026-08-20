@@ -25,6 +25,46 @@ export interface LedgerLine {
   paymentMethod?: CreditPaymentMethod | null;
   cashAmount?: number | null;
   idempotencyKey?: string | null;
+  /** Por qué se hizo. Obligatorio en reversas. */
+  reason?: string | null;
+  /**
+   * A qué asiento corrige este renglón. Va AQUÍ y no después de guardar:
+   * el trigger de inmutabilidad rechaza cualquier UPDATE sobre
+   * credit_transactions, así que el dato tiene que estar completo en el
+   * INSERT o no entra nunca.
+   */
+  reversesTransactionId?: string | null;
+}
+
+// Cómo llegan las filas crudas desde pg: los NUMERIC vienen como string.
+interface RawTransactionRow {
+  id: string;
+  type: CreditTransactionType;
+  amount: number;
+  balance_after: number;
+  payment_method: CreditPaymentMethod | null;
+  cash_amount: string | null;
+  reason: string | null;
+  created_at: Date;
+  reverses_transaction_id: string | null;
+  customer_id: string;
+  customer_name: string | null;
+  created_by_staff_id: string | null;
+  staff_name: string | null;
+}
+
+export interface VenueTransactionRow {
+  id: string;
+  type: CreditTransactionType;
+  amount: number;
+  balanceAfter: number;
+  paymentMethod: CreditPaymentMethod | null;
+  cashAmount: number | null;
+  reason: string | null;
+  createdAt: Date;
+  reversesTransactionId: string | null;
+  customer: { id: string; displayName: string | null };
+  staff: { id: string; displayName: string | null } | null;
 }
 
 export interface ApplyLinesParams {
@@ -57,6 +97,7 @@ export interface ApplyTransactionParams {
   createdByStaffId?: string | null;
   queueRequestId?: string | null;
   reversesTransactionId?: string | null;
+  reason?: string | null;
   idempotencyKey?: string | null;
 }
 
@@ -200,7 +241,10 @@ export class CreditsService {
         cashAmount: renglon.cashAmount ?? null,
         createdByStaffId: params.createdByStaffId ?? null,
         queueRequestId: renglon.queueRequestId ?? null,
-        reversesTransactionId: null,
+        // Completos en el INSERT: el trigger de inmutabilidad no permite
+        // corregirlos después.
+        reversesTransactionId: renglon.reversesTransactionId ?? null,
+        reason: renglon.reason ?? null,
         idempotencyKey: renglon.idempotencyKey ?? null,
       });
 
@@ -254,16 +298,15 @@ export class CreditsService {
               cashAmount: params.cashAmount,
               queueRequestId: params.queueRequestId,
               idempotencyKey: params.idempotencyKey,
+              // Ahora viajan en el renglón. Antes se intentaba escribir
+              // con un UPDATE posterior, que el trigger de inmutabilidad
+              // habría rechazado — nunca falló solo porque ninguna prueba
+              // ejercitaba ese camino.
+              reversesTransactionId: params.reversesTransactionId,
+              reason: params.reason,
             },
           ],
         });
-
-        // reversesTransactionId no viaja en LedgerLine porque solo aplica
-        // a movimientos únicos (una nota de crédito corrige UN asiento).
-        if (params.reversesTransactionId) {
-          movimiento.reversesTransactionId = params.reversesTransactionId;
-          await manager.save(movimiento);
-        }
 
         return movimiento;
       });
@@ -335,6 +378,171 @@ export class CreditsService {
       tienePhone: cliente.phoneNumber !== null,
       balance: await this.getBalance(cliente.id, venueId),
     };
+  }
+
+  // ==============================================================
+  // Historial de movimientos del local.
+  //
+  // Es SQL directo a propósito: es una consulta de reporte con tres
+  // joins, y escribirla como SQL es más claro que armarla con el ORM.
+  // La proyección es explícita — nunca sale el correo de nadie.
+  // ==============================================================
+  async listVenueTransactions(
+    venueId: string,
+    opciones: { userId?: string; limit?: number; offset?: number } = {},
+  ): Promise<VenueTransactionRow[]> {
+    const limit = Math.min(opciones.limit ?? 50, 200);
+    const offset = opciones.offset ?? 0;
+
+    const filas = await this.dataSource.query<RawTransactionRow[]>(
+      `SELECT ct.id,
+              ct.type,
+              ct.amount,
+              ct.balance_after,
+              ct.payment_method,
+              ct.cash_amount,
+              ct.reason,
+              ct.created_at,
+              ct.reverses_transaction_id,
+              ca.user_id                AS customer_id,
+              cliente.display_name      AS customer_name,
+              ct.created_by_staff_id,
+              empleado.display_name     AS staff_name
+         FROM credit_transactions ct
+         JOIN credit_accounts ca      ON ca.id = ct.credit_account_id
+         JOIN users cliente           ON cliente.id = ca.user_id
+         LEFT JOIN users empleado     ON empleado.id = ct.created_by_staff_id
+        WHERE ca.venue_id = $1
+          AND ($2::uuid IS NULL OR ca.user_id = $2::uuid)
+        ORDER BY ct.seq DESC
+        LIMIT $3 OFFSET $4`,
+      [venueId, opciones.userId ?? null, limit, offset],
+    );
+
+    return filas.map((f) => ({
+      id: f.id,
+      type: f.type,
+      amount: Number(f.amount),
+      balanceAfter: Number(f.balance_after),
+      paymentMethod: f.payment_method,
+      // NUMERIC llega como string desde pg — el mismo motivo de siempre.
+      cashAmount: f.cash_amount === null ? null : Number(f.cash_amount),
+      reason: f.reason,
+      createdAt: f.created_at,
+      reversesTransactionId: f.reverses_transaction_id,
+      customer: { id: f.customer_id, displayName: f.customer_name },
+      staff: f.created_by_staff_id
+        ? { id: f.created_by_staff_id, displayName: f.staff_name }
+        : null,
+    }));
+  }
+
+  // ==============================================================
+  // Nota de crédito: corrige un movimiento SIN borrarlo.
+  //
+  // El libro mayor es inmutable, así que corregir significa insertar un
+  // asiento contrario que apunta al original. El error queda visible, y
+  // también queda visible quién lo corrigió y por qué.
+  //
+  // Admite reversa PARCIAL: si el cliente ya gastó parte, se devuelve lo
+  // que todavía se puede. El resto es una conversación de negocio.
+  // ==============================================================
+  async reverseTransaction(params: {
+    venueId: string;
+    transactionId: string;
+    adminUserId: string;
+    reason: string;
+    /** Cuántos créditos revertir. Por defecto, el movimiento completo. */
+    amount?: number;
+  }): Promise<CreditTransaction> {
+    return this.dataSource.transaction(async (manager) => {
+      const original = await manager.findOne(CreditTransaction, {
+        where: { id: params.transactionId },
+      });
+      if (!original) {
+        throw new NotFoundException('No existe ese movimiento');
+      }
+
+      // IDOR: el movimiento tiene que ser de una cuenta DE ESTE local.
+      const cuenta = await manager.findOne(CreditAccount, {
+        where: { id: original.creditAccountId, venueId: params.venueId },
+      });
+      if (!cuenta) {
+        throw new NotFoundException(
+          'Ese movimiento no pertenece a este negocio',
+        );
+      }
+
+      // Guard Clause: una reversa no se revierte. Si la corrección estuvo
+      // mal, se hace una nueva sobre el movimiento original.
+      if (original.type === 'reversal') {
+        throw new BadRequestException(
+          'No se puede revertir una reversa. Corrige sobre el movimiento original.',
+        );
+      }
+
+      // Cuánto de este movimiento ya se revirtió antes.
+      const reversasPrevias = await manager.find(CreditTransaction, {
+        where: { reversesTransactionId: original.id },
+      });
+      const yaRevertido = reversasPrevias.reduce(
+        (suma, r) => suma + Math.abs(r.amount),
+        0,
+      );
+
+      const montoOriginal = Math.abs(original.amount);
+      const pendiente = montoOriginal - yaRevertido;
+
+      if (pendiente <= 0) {
+        throw new BadRequestException(
+          'Ese movimiento ya fue revertido por completo',
+        );
+      }
+
+      const aRevertir = params.amount ?? pendiente;
+
+      if (!Number.isInteger(aRevertir) || aRevertir < 1) {
+        throw new BadRequestException(
+          'El monto a revertir debe ser un entero mayor que cero',
+        );
+      }
+      if (aRevertir > pendiente) {
+        throw new BadRequestException(
+          `Solo quedan ${pendiente} crédito(s) por revertir de ese movimiento (original ${montoOriginal}, ya revertido ${yaRevertido})`,
+        );
+      }
+
+      // El signo es el opuesto del original: revertir una carga descuenta,
+      // revertir un cobro devuelve.
+      const montoConSigno = original.amount > 0 ? -aRevertir : aRevertir;
+
+      // Si el cliente ya gastó, no se puede devolver todo. Se avisa con el
+      // máximo posible en vez de dejar que reviente el CHECK de la base.
+      if (cuenta.balance + montoConSigno < 0) {
+        throw new BadRequestException(
+          `No se puede revertir ${aRevertir}: el cliente ya gastó parte y el saldo quedaría negativo. Máximo reversible ahora: ${cuenta.balance}`,
+        );
+      }
+
+      const [reversa] = await this.aplicarRenglones(manager, {
+        userId: cuenta.userId,
+        venueId: params.venueId,
+        // Queda registrado QUIÉN corrigió, que es distinto de quién causó
+        // el error. Esa firma es lo que hace que la auditoría signifique
+        // algo.
+        createdByStaffId: params.adminUserId,
+        lines: [
+          {
+            type: 'reversal',
+            amount: montoConSigno,
+            reversesTransactionId: original.id,
+            reason: params.reason,
+          },
+        ],
+      });
+
+      return reversa;
+    });
   }
 
   // El pago de haber elegido montos CON SIGNO: la integridad de todo el

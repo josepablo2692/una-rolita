@@ -130,6 +130,22 @@ export class CreditTransaction {
   })
   idempotencyKey!: string | null;
 
+  // Por qué se hizo este movimiento. Obligatorio en las reversas —
+  // una corrección sin explicación no sirve para auditar.
+  @Column({ name: 'reason', type: 'varchar', length: 255, nullable: true })
+  reason!: string | null;
+
+  // Orden estricto de inserción, asignado por la base.
+  //
+  // NO usar createdAt para ordenar: TypeORM lo llena con un Date de
+  // JavaScript (precisión de milisegundos), así que los dos renglones de
+  // la canción gratis —el regalo y el cobro— quedan con el MISMO
+  // timestamp y el ORDER BY desempata al azar.
+  //
+  // Es de solo lectura: la base la asigna sola con la secuencia.
+  @Column({ name: 'seq', type: 'bigint', insert: false, update: false })
+  seq!: number;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }
