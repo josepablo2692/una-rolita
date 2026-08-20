@@ -11,6 +11,7 @@ import { VenuesService } from './venues.service';
 import { CreateVenueDto } from './dto/create-venue.dto';
 import { CreateVenueTableDto } from './dto/create-venue-table.dto';
 import { UpdateVenuePricingDto } from './dto/update-venue-pricing.dto';
+import { UpdateVenuePoliciesDto } from './dto/update-venue-policies.dto';
 import { Venue } from './entities/venue.entity';
 import { VenueTable } from './entities/venue-table.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -57,6 +58,22 @@ export class VenuesController {
     @Body() dto: UpdateVenuePricingDto,
   ): Promise<Venue> {
     return this.venuesService.updatePricing(id, dto);
+  }
+
+  // Políticas de operación: expiración de créditos y cierre automático.
+  //
+  // Endpoint aparte de /pricing a propósito. Cambiar un precio afecta el
+  // próximo pedido; cambiar la expiración afecta el dinero que los
+  // clientes YA tienen guardado. No deben poder tocarse por accidente en
+  // la misma llamada.
+  @UseGuards(JwtAuthGuard, VenueRolesGuard)
+  @Roles('venue_admin')
+  @Patch(':id/policies')
+  updatePolicies(
+    @Param('id') id: string,
+    @Body() dto: UpdateVenuePoliciesDto,
+  ): Promise<Venue> {
+    return this.venuesService.updatePolicies(id, dto);
   }
 
   // Crear mesas genera qrCodeToken — la llave de acceso de la mesa.

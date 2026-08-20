@@ -1,0 +1,425 @@
+// apps/api/test/credit-expiry.e2e-spec.ts
+//
+// Expiración de créditos por inactividad (ADR 0006 + enmienda de 12 meses).
+//
+// La prueba que más importa es la 4: si el correo falla, NO se expira
+// nada. El aviso no es cortesía, es precondición. Un módulo que le quita
+// dinero a la gente tiene que fallar hacia el lado del cliente.
+//
+// El notificador real se reemplaza por uno falso (`overrideProvider`).
+// Sin eso, correr las pruebas mandaría correos de verdad.
+
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import request from 'supertest';
+import Redis from 'ioredis';
+import { DataSource } from 'typeorm';
+import * as bcrypt from 'bcryptjs';
+
+import { AppModule } from '../src/app.module';
+import { setupApp } from '../src/common/setup-app';
+import { REDIS_CLIENT } from '../src/redis/redis.module';
+import { User } from '../src/modules/auth/entities/user.entity';
+import { UserVenueRole } from '../src/modules/auth/entities/user-venue-role.entity';
+import { Venue } from '../src/modules/venues/entities/venue.entity';
+import { CreditsService } from '../src/modules/credits/credits.service';
+import { CreditExpiryService } from '../src/modules/credits/expiry/credit-expiry.service';
+import {
+  EXPIRY_NOTIFIER,
+  AvisoDeExpiracion,
+} from '../src/modules/credits/expiry/expiry-notifier.interface';
+
+const CLAVE = 'Prueba2026!';
+const ROL_VENUE_ADMIN = 2;
+const ROL_DJ = 3;
+const MESES_DE_EXPIRACION = 12;
+const DIAS_DE_AVISO = 30;
+
+// Notificador falso: guarda los avisos en vez de mandarlos, y puede
+// simular una caída del correo.
+class NotificadorFalso {
+  avisos: AvisoDeExpiracion[] = [];
+  falla = false;
+
+  avisar(aviso: AvisoDeExpiracion): Promise<void> {
+    if (this.falla) {
+      return Promise.reject(new Error('SMTP caído (simulado)'));
+    }
+    this.avisos.push(aviso);
+    return Promise.resolve();
+  }
+
+  reiniciar(): void {
+    this.avisos = [];
+    this.falla = false;
+  }
+}
+
+describe('Expiración de créditos (e2e)', () => {
+  let app: INestApplication;
+  let dataSource: DataSource;
+  let credits: CreditsService;
+  let expiry: CreditExpiryService;
+
+  const notificador = new NotificadorFalso();
+
+  let venue: Venue;
+  let tokenAdmin: string;
+
+  const sufijo = Date.now();
+  const creados: string[] = [];
+
+  const crearUsuario = async (opciones: {
+    etiqueta: string;
+    rol: number;
+    creditos?: number;
+  }): Promise<{ id: string; token: string; email: string }> => {
+    const users = dataSource.getRepository(User);
+    const asignaciones = dataSource.getRepository(UserVenueRole);
+
+    const email = `${opciones.etiqueta}.expira.${sufijo}@prueba.gt`;
+    const usuario = await users.save(
+      users.create({
+        email,
+        displayName: opciones.etiqueta,
+        passwordHash: bcrypt.hashSync(CLAVE, 10),
+        isEmailVerified: true,
+        freeSongUsed: true,
+      }),
+    );
+    creados.push(usuario.id);
+
+    await asignaciones.save(
+      asignaciones.create({
+        userId: usuario.id,
+        venueId: venue.id,
+        roleId: opciones.rol,
+      }),
+    );
+
+    if (opciones.creditos) {
+      await credits.applyTransaction({
+        userId: usuario.id,
+        venueId: venue.id,
+        type: 'topup_manual',
+        amount: opciones.creditos,
+        paymentMethod: 'efectivo_recepcion',
+      });
+    }
+
+    const res = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email, password: CLAVE })
+      .expect(201);
+
+    return { id: usuario.id, token: res.body.accessToken as string, email };
+  };
+
+  // Envejece una cuenta como si llevara N meses sin moverse. Es la única
+  // forma de probar esto sin esperar un año.
+  const envejecerCuenta = (userId: string, meses: number) =>
+    dataSource.query(
+      `UPDATE credit_accounts
+          SET last_activity_at = now() - ($3::int * INTERVAL '1 month')
+        WHERE user_id = $1 AND venue_id = $2`,
+      [userId, venue.id, meses],
+    );
+
+  // Retrocede la fecha del aviso, para simular que ya pasaron sus días.
+  const envejecerAviso = (userId: string, dias: number) =>
+    dataSource.query(
+      `UPDATE credit_accounts
+          SET expiry_warning_sent_at = now() - ($3::int * INTERVAL '1 day')
+        WHERE user_id = $1 AND venue_id = $2`,
+      [userId, venue.id, dias],
+    );
+
+  const avisoDe = (userId: string) =>
+    dataSource
+      .query<Array<{ expiry_warning_sent_at: Date | null }>>(
+        `SELECT expiry_warning_sent_at FROM credit_accounts
+          WHERE user_id = $1 AND venue_id = $2`,
+        [userId, venue.id],
+      )
+      .then((filas) => filas[0]?.expiry_warning_sent_at ?? null);
+
+  const saldoDe = (userId: string) => credits.getBalance(userId, venue.id);
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    })
+      // Sin esto, correr las pruebas manda correos de verdad.
+      .overrideProvider(EXPIRY_NOTIFIER)
+      .useValue(notificador)
+      .compile();
+
+    app = moduleFixture.createNestApplication();
+    setupApp(app);
+    await app.init();
+
+    dataSource = app.get(DataSource);
+    credits = app.get(CreditsService);
+    expiry = app.get(CreditExpiryService);
+
+    venue = await dataSource.getRepository(Venue).save(
+      dataSource.getRepository(Venue).create({
+        name: `Bar Expiración ${sufijo}`,
+        type: 'bar',
+        creditExpiryMonths: MESES_DE_EXPIRACION,
+      }),
+    );
+
+    const admin = await crearUsuario({
+      etiqueta: 'admin',
+      rol: ROL_VENUE_ADMIN,
+    });
+    tokenAdmin = admin.token;
+  }, 60000);
+
+  beforeEach(() => notificador.reiniciar());
+
+  afterAll(async () => {
+    await dataSource.query(
+      `ALTER TABLE credit_transactions DISABLE TRIGGER trg_credit_transactions_immutable`,
+    );
+    await dataSource.query(
+      `DELETE FROM credit_transactions
+        WHERE credit_account_id IN (SELECT id FROM credit_accounts WHERE venue_id = $1)`,
+      [venue.id],
+    );
+    await dataSource.query(
+      `ALTER TABLE credit_transactions ENABLE TRIGGER trg_credit_transactions_immutable`,
+    );
+
+    await dataSource.query(`DELETE FROM credit_accounts WHERE venue_id = $1`, [
+      venue.id,
+    ]);
+    await dataSource.query(`DELETE FROM user_venue_roles WHERE venue_id = $1`, [
+      venue.id,
+    ]);
+    if (creados.length > 0) {
+      await dataSource.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [
+        creados,
+      ]);
+    }
+    await dataSource.query(`DELETE FROM venues WHERE id = $1`, [venue.id]);
+
+    const redis: Redis = app.get(REDIS_CLIENT);
+    await redis.quit();
+    await app.close();
+  }, 60000);
+
+  // ==============================================================
+
+  it('1) a los 11 meses y 1 día se avisa, y el correo dice cuánto y cuándo', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'poravisar',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 12,
+    });
+
+    // 11 meses y pico: entra en la ventana de 30 días previos.
+    await envejecerCuenta(cliente.id, 11);
+    await dataSource.query(
+      `UPDATE credit_accounts
+          SET last_activity_at = last_activity_at - INTERVAL '10 days'
+        WHERE user_id = $1 AND venue_id = $2`,
+      [cliente.id, venue.id],
+    );
+
+    const avisadas = await expiry.avisarSaldosPorExpirar();
+    expect(avisadas).toBeGreaterThanOrEqual(1);
+
+    const mio = notificador.avisos.find((a) => a.email === cliente.email);
+    expect(mio).toBeDefined();
+    expect(mio?.balance).toBe(12);
+    expect(mio?.venueName).toBe(venue.name);
+    expect(await avisoDe(cliente.id)).not.toBeNull();
+
+    // Y el saldo sigue intacto: avisar no es cobrar.
+    expect(await saldoDe(cliente.id)).toBe(12);
+  }, 60000);
+
+  it('2) no se avisa dos veces a la misma cuenta', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'dobleaviso',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 5,
+    });
+    await envejecerCuenta(cliente.id, 12);
+
+    await expiry.avisarSaldosPorExpirar();
+    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
+      true,
+    );
+
+    // Segunda corrida el mismo día: la marca la deja fuera del WHERE.
+    notificador.reiniciar();
+    await expiry.avisarSaldosPorExpirar();
+    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
+      false,
+    );
+  }, 60000);
+
+  it('3) una cuenta avisada y vencida expira como renglón del libro mayor', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'expirada',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 12,
+    });
+    await envejecerCuenta(cliente.id, 13);
+    await expiry.avisarSaldosPorExpirar();
+    await envejecerAviso(cliente.id, DIAS_DE_AVISO + 1);
+
+    const expiradas = await expiry.expirarSaldosInactivos();
+    expect(expiradas).toBeGreaterThanOrEqual(1);
+
+    expect(await saldoDe(cliente.id)).toBe(0);
+
+    // NUNCA un reseteo silencioso: tiene que existir el renglón, con su
+    // monto negativo y su razón escrita.
+    const [renglon] = await dataSource.query<
+      Array<{ type: string; amount: number; reason: string | null }>
+    >(
+      `SELECT ct.type, ct.amount, ct.reason
+         FROM credit_transactions ct
+         JOIN credit_accounts ca ON ca.id = ct.credit_account_id
+        WHERE ca.user_id = $1 AND ca.venue_id = $2 AND ct.type = 'expiration'`,
+      [cliente.id, venue.id],
+    );
+
+    expect(renglon).toBeDefined();
+    expect(renglon.amount).toBe(-12);
+    expect(renglon.reason).toContain('12 meses sin actividad');
+  }, 60000);
+
+  // ==============================================================
+  // LA PRUEBA QUE PROTEGE AL CLIENTE
+  // ==============================================================
+  it('4) si el correo falla, NO se expira nada — el aviso es precondición', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'smtpcaido',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 30,
+    });
+    await envejecerCuenta(cliente.id, 14);
+
+    // El servidor de correo está caído.
+    notificador.falla = true;
+    const avisadas = await expiry.avisarSaldosPorExpirar();
+
+    // No se avisó a nadie, y la cuenta quedó SIN marcar — mañana se
+    // reintenta sola.
+    expect(avisadas).toBe(0);
+    expect(await avisoDe(cliente.id)).toBeNull();
+
+    // Y aunque lleve 14 meses vencida, el job de expiración no la toca.
+    await expiry.expirarSaldosInactivos();
+    expect(await saldoDe(cliente.id)).toBe(30);
+  }, 60000);
+
+  it('5) si el cliente vuelve, el aviso se borra y ya no expira', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'volvio',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 10,
+    });
+    await envejecerCuenta(cliente.id, 13);
+    await expiry.avisarSaldosPorExpirar();
+    await envejecerAviso(cliente.id, DIAS_DE_AVISO + 1);
+
+    // El cliente vuelve y recarga. Cualquier movimiento sirve.
+    await credits.applyTransaction({
+      userId: cliente.id,
+      venueId: venue.id,
+      type: 'topup_manual',
+      amount: 5,
+      paymentMethod: 'efectivo_recepcion',
+    });
+
+    // La marca se borró sola dentro de applyLines.
+    expect(await avisoDe(cliente.id)).toBeNull();
+
+    await expiry.expirarSaldosInactivos();
+    expect(await saldoDe(cliente.id)).toBe(15);
+  }, 60000);
+
+  it('6) una cuenta reciente ni se avisa ni se expira', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'reciente',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 20,
+    });
+
+    await expiry.avisarSaldosPorExpirar();
+    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
+      false,
+    );
+
+    await expiry.expirarSaldosInactivos();
+    expect(await saldoDe(cliente.id)).toBe(20);
+  }, 60000);
+
+  it('7) el dueño puede poner 0: sus créditos no expiran nunca', async () => {
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: 0 })
+      .expect(200);
+
+    const cliente = await crearUsuario({
+      etiqueta: 'nuncaexpira',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 40,
+    });
+    await envejecerCuenta(cliente.id, 36); // tres años quieta
+
+    await expiry.avisarSaldosPorExpirar();
+    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
+      false,
+    );
+
+    await expiry.expirarSaldosInactivos();
+    expect(await saldoDe(cliente.id)).toBe(40);
+
+    // Se deja el local como estaba para no afectar otras pruebas.
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: MESES_DE_EXPIRACION })
+      .expect(200);
+  }, 60000);
+
+  it('8) las políticas se validan: nada de meses negativos ni de 120', async () => {
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: -1 })
+      .expect(400);
+
+    // Un dedazo (120 en vez de 12) sin techo sería indetectable hasta
+    // que alguien reclamara en 2036.
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: 120 })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ sessionTimeoutHours: 0 })
+      .expect(400);
+  }, 60000);
+
+  it('9) un DJ no puede cambiar las políticas del local', async () => {
+    const dj = await crearUsuario({ etiqueta: 'djsinpermiso', rol: ROL_DJ });
+
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${dj.token}`)
+      .send({ creditExpiryMonths: 1 })
+      .expect(403);
+  }, 60000);
+});

@@ -54,6 +54,19 @@ export class CreditAccount {
   })
   lastActivityAt!: Date;
 
+  // Cuándo se le avisó al cliente que su saldo está por expirar.
+  // NULL = no se le ha avisado en este ciclo de inactividad.
+  //
+  // Guarda el HECHO, no el canal: el mismo aviso sale por correo Y dentro
+  // de la app, y ninguno de los dos debe repetirse cada día que corra el
+  // job. Vuelve a NULL en cuanto la cuenta se mueve (ver applyLines).
+  @Column({
+    name: 'expiry_warning_sent_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  expiryWarningSentAt!: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 

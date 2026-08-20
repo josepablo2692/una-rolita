@@ -252,9 +252,41 @@ export class CreditsService {
     }
 
     // 5. El saldo materializado, una sola vez al final.
+    //
+    // `last_activity_at` la escribe POSTGRES con now(), no JavaScript con
+    // new Date(). El job de expiración va a comparar esta columna contra
+    // el now() de la base: si la escribiéramos con el reloj del servidor
+    // de Node estaríamos comparando dos relojes distintos. Sobre una
+    // ventana de doce meses el desfase no cambia el resultado, pero es
+    // exactamente el patrón que nos rompió el cierre de noche — ahí la
+    // ventana era de milisegundos y sí importaba.
+    //
+    // Regla: dos instantes que se comparan entre sí salen del mismo reloj.
+    //
+    // Y `expiry_warning_sent_at` vuelve a NULL: la cuenta acaba de
+    // moverse, así que el ciclo de inactividad empieza de cero y el aviso
+    // viejo ya no aplica. Sin esta línea pasa lo peor que puede pasar en
+    // este módulo:
+    //
+    //   enero  → Ana lleva un año quieta, se le avisa, se marca "avisada"
+    //   febrero→ Ana vuelve y recarga Q50
+    //   feb+1año→ le toca expirar otra vez, pero la marca vieja sigue ahí
+    //            → NO se le avisa → pierde Q50 en silencio
+    //
+    // Es decir: le expiraríamos el saldo sin aviso justo a la clienta que
+    // sí regresó. Es una sola línea y es la más importante de este método.
+    await manager.query(
+      `UPDATE credit_accounts
+          SET balance                = $2,
+              last_activity_at       = now(),
+              expiry_warning_sent_at = NULL,
+              updated_at             = now()
+        WHERE id = $1`,
+      [cuenta.id, saldo],
+    );
+    // La entidad en memoria queda sincronizada para quien la siga usando.
     cuenta.balance = saldo;
-    cuenta.lastActivityAt = new Date();
-    await manager.save(cuenta);
+    cuenta.expiryWarningSentAt = null;
 
     return guardados;
   }

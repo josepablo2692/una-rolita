@@ -83,9 +83,12 @@ export class Venue {
   })
   comboJumpDedicationPrice!: number;
   // Meses de INACTIVIDAD antes de que expire el saldo de una cuenta.
-  // Configurable por local: un gimnasio y una discoteca tienen ritmos
-  // distintos (ADR 0006).
-  @Column({ name: 'credit_expiry_months', type: 'int', default: 3 })
+  // Configurable por local. 0 = no expiran nunca (ADR 0006 + enmienda).
+  //
+  // Doce por default y no tres: el local ya cobró ese dinero cuando el
+  // cliente cargó, así que expirar antes no le da liquidez nueva — solo
+  // castiga al cliente que sale dos veces al año.
+  @Column({ name: 'credit_expiry_months', type: 'int', default: 12 })
   creditExpiryMonths!: number;
 
   // Horas sin actividad tras las cuales el sistema cierra la noche solo.

@@ -19,7 +19,12 @@ CREATE TABLE venues (
     queue_jump_price NUMERIC(10,2) NOT NULL DEFAULT 5.00,
     dedication_price NUMERIC(10,2) NOT NULL DEFAULT 3.00,
     combo_jump_dedication_price NUMERIC(10,2) NOT NULL DEFAULT 7.00, -- precio fijo de paquete (marketing), independiente de la suma de los dos anteriores
-    credit_expiry_months INT NOT NULL DEFAULT 3 CHECK (credit_expiry_months > 0), -- expiración por INACTIVIDAD de la cuenta (ADR 0006)
+    -- Expiración por INACTIVIDAD de la cuenta (ADR 0006 + su enmienda).
+    -- 12 meses por default: el dinero ya lo cobró el local, así que
+    -- expirar antes no le da liquidez nueva, solo castiga al cliente que
+    -- sale poco. El 0 es válido y significa "no expiran nunca" — por eso
+    -- el CHECK es >= 0 y no > 0.
+    credit_expiry_months INT NOT NULL DEFAULT 12 CHECK (credit_expiry_months >= 0),
     bank_account_info JSONB,                          -- datos para transferencias directas
     spotify_account_id UUID,                          -- cuenta Spotify Premium vinculada al local
     is_active       BOOLEAN NOT NULL DEFAULT true,
@@ -248,6 +253,20 @@ CREATE TABLE credit_accounts (
     -- Para la expiración por inactividad (ADR 0006).
     last_activity_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    -- Cuándo se le avisó al cliente que su saldo está por expirar.
+    -- NULL = todavía no se le ha avisado en este ciclo de inactividad.
+    --
+    -- Guarda el HECHO ("a esta cuenta ya se le avisó"), no el canal: el
+    -- mismo aviso sale por correo Y dentro de la app, y ninguno de los
+    -- dos debe repetirse cada día que corra el job.
+    --
+    -- SE VUELVE A PONER EN NULL cada vez que la cuenta se mueve. Sin eso
+    -- pasa esto: se le avisa en enero, el cliente vuelve en febrero y
+    -- recarga, y cuando en el próximo ciclo le toque expirar otra vez la
+    -- marca vieja hace que NO se le avise. Se le expiraría el saldo en
+    -- silencio justo al cliente que sí regresó.
+    expiry_warning_sent_at TIMESTAMPTZ,
+
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -260,8 +279,15 @@ CREATE TABLE credit_accounts (
 
 CREATE INDEX idx_credit_accounts_venue ON credit_accounts (venue_id);
 
--- Índice PARCIAL: al job de expiración solo le importan las cuentas con
--- saldo. Las de saldo 0 ni siquiera entran al índice.
+-- Índice PARCIAL: a los jobs de aviso y de expiración solo les importan
+-- las cuentas CON saldo. Las de saldo 0 ni siquiera entran al índice, y
+-- son la mayoría en cualquier local con tiempo funcionando.
+--
+-- Este mismo índice sirve para los dos jobs. NO se agrega un segundo
+-- índice con `AND expiry_warning_sent_at IS NULL`: este ya reduce la
+-- búsqueda a "cuentas con saldo pasadas de fecha", que son pocas, y
+-- filtrar el aviso sobre ese puñado es gratis. Cada índice se paga en
+-- cada escritura, y aquí se escribe en cada cobro.
 CREATE INDEX idx_credit_accounts_inactive
     ON credit_accounts (last_activity_at) WHERE balance > 0;
 

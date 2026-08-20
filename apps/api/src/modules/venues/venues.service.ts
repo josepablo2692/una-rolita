@@ -7,6 +7,7 @@ import { VenueTable } from './entities/venue-table.entity';
 import { CreateVenueDto } from './dto/create-venue.dto';
 import { CreateVenueTableDto } from './dto/create-venue-table.dto';
 import { UpdateVenuePricingDto } from './dto/update-venue-pricing.dto';
+import { UpdateVenuePoliciesDto } from './dto/update-venue-policies.dto';
 
 @Injectable()
 export class VenuesService {
@@ -84,6 +85,26 @@ export class VenuesService {
     venue.queueJumpPrice = newJumpPrice;
     venue.dedicationPrice = newDedicationPrice;
     venue.comboJumpDedicationPrice = comboPrice;
+
+    return this.venueRepository.save(venue);
+  }
+
+  // Políticas de operación: cuándo expiran los créditos y cuándo se
+  // cierra la noche sola. Es un PATCH parcial — el admin manda solo lo
+  // que quiere cambiar y lo demás se queda como estaba.
+  async updatePolicies(
+    id: string,
+    dto: UpdateVenuePoliciesDto,
+  ): Promise<Venue> {
+    const venue = await this.findOne(id);
+
+    // `?? venue.x` y no `|| venue.x`: con `||` un 0 enviado a propósito
+    // ("no expiran nunca") se leería como ausente y se descartaría. Es
+    // justo el valor que este endpoint existe para poder poner.
+    venue.creditExpiryMonths =
+      dto.creditExpiryMonths ?? venue.creditExpiryMonths;
+    venue.sessionTimeoutHours =
+      dto.sessionTimeoutHours ?? venue.sessionTimeoutHours;
 
     return this.venueRepository.save(venue);
   }
