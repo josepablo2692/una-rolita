@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { Venue } from '../../venues/entities/venue.entity';
 import { VenueTable } from '../../venues/entities/venue-table.entity';
+import { VenueSession } from '../../venues/entities/venue-session.entity';
 import { User } from '../../auth/entities/user.entity';
 import { Song } from './song.entity';
 import { NumericColumnTransformer } from '../../../common/transformers/numeric.transformer';
@@ -29,6 +30,15 @@ export class QueueRequest {
   @ManyToOne(() => Venue)
   @JoinColumn({ name: 'venue_id' })
   venue!: Venue;
+
+  // A qué noche pertenece el pedido. La cola no es perpetua: cuando la
+  // sesión se cierra, los pedidos que quedaron se saltan y se reembolsan.
+  @Column({ name: 'session_id', type: 'uuid' })
+  sessionId!: string;
+
+  @ManyToOne(() => VenueSession)
+  @JoinColumn({ name: 'session_id' })
+  session!: VenueSession;
 
   @Column({ name: 'table_id', type: 'uuid' })
   tableId!: string;
