@@ -9,6 +9,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { RedisModule } from './redis/redis.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { CreditsModule } from './modules/credits/credits.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }), // lee el .env y lo deja disponible en toda la app
@@ -22,6 +23,7 @@ import { CreditsModule } from './modules/credits/credits.module';
     AuthModule,
     QueueModule,
     CreditsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
