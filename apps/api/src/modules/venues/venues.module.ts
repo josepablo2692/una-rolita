@@ -6,6 +6,7 @@ import { VenueSession } from './entities/venue-session.entity';
 import { VenuesController } from './venues.controller';
 import { VenuesService } from './venues.service';
 import { AuthorizationModule } from '../auth/authorization.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -16,6 +17,9 @@ import { AuthorizationModule } from '../auth/authorization.module';
     // Provee VenueRolesGuard. NO importamos AuthModule aquí: AuthModule
     // ya importa VenuesModule y se formaría un ciclo.
     AuthorizationModule,
+    // Acortar el plazo de expiración adelanta la fecha de vencimiento del
+    // dinero que los clientes YA tienen guardado. Eso se avisa.
+    NotificationsModule,
   ],
   controllers: [VenuesController],
   providers: [VenuesService],

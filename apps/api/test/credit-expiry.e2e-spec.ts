@@ -25,9 +25,9 @@ import { Venue } from '../src/modules/venues/entities/venue.entity';
 import { CreditsService } from '../src/modules/credits/credits.service';
 import { CreditExpiryService } from '../src/modules/credits/expiry/credit-expiry.service';
 import {
-  EXPIRY_NOTIFIER,
-  AvisoDeExpiracion,
-} from '../src/modules/credits/expiry/expiry-notifier.interface';
+  MAILER,
+  CorreoSalida,
+} from '../src/modules/notifications/mailer.interface';
 
 const CLAVE = 'Prueba2026!';
 const ROL_VENUE_ADMIN = 2;
@@ -35,23 +35,31 @@ const ROL_DJ = 3;
 const MESES_DE_EXPIRACION = 12;
 const DIAS_DE_AVISO = 30;
 
-// Notificador falso: guarda los avisos en vez de mandarlos, y puede
-// simular una caída del correo.
-class NotificadorFalso {
-  avisos: AvisoDeExpiracion[] = [];
+// Transporte de correo falso: guarda lo que se "mandó" en vez de
+// mandarlo, y puede simular una caída del servidor SMTP.
+class MailerFalso {
+  correos: CorreoSalida[] = [];
   falla = false;
 
-  avisar(aviso: AvisoDeExpiracion): Promise<void> {
+  enviar(correo: CorreoSalida): Promise<void> {
     if (this.falla) {
       return Promise.reject(new Error('SMTP caído (simulado)'));
     }
-    this.avisos.push(aviso);
+    this.correos.push(correo);
     return Promise.resolve();
   }
 
   reiniciar(): void {
-    this.avisos = [];
+    this.correos = [];
     this.falla = false;
+  }
+
+  paraNadie(email: string): boolean {
+    return !this.correos.some((c) => c.to === email);
+  }
+
+  para(email: string): CorreoSalida | undefined {
+    return this.correos.find((c) => c.to === email);
   }
 }
 
@@ -61,7 +69,7 @@ describe('Expiración de créditos (e2e)', () => {
   let credits: CreditsService;
   let expiry: CreditExpiryService;
 
-  const notificador = new NotificadorFalso();
+  const correo = new MailerFalso();
 
   let venue: Venue;
   let tokenAdmin: string;
@@ -150,8 +158,8 @@ describe('Expiración de créditos (e2e)', () => {
       imports: [AppModule],
     })
       // Sin esto, correr las pruebas manda correos de verdad.
-      .overrideProvider(EXPIRY_NOTIFIER)
-      .useValue(notificador)
+      .overrideProvider(MAILER)
+      .useValue(correo)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -177,7 +185,7 @@ describe('Expiración de créditos (e2e)', () => {
     tokenAdmin = admin.token;
   }, 60000);
 
-  beforeEach(() => notificador.reiniciar());
+  beforeEach(() => correo.reiniciar());
 
   afterAll(async () => {
     await dataSource.query(
@@ -190,6 +198,27 @@ describe('Expiración de créditos (e2e)', () => {
     );
     await dataSource.query(
       `ALTER TABLE credit_transactions ENABLE TRIGGER trg_credit_transactions_immutable`,
+    );
+
+    // notification_deliveries es append-only con trigger: un DELETE en
+    // cascada desde users lo dispara y revienta la limpieza.
+    await dataSource.query(
+      `ALTER TABLE notification_deliveries DISABLE TRIGGER trg_notification_deliveries_immutable`,
+    );
+    if (creados.length > 0) {
+      await dataSource.query(
+        `DELETE FROM notification_deliveries
+          WHERE notification_id IN
+            (SELECT id FROM notifications WHERE user_id = ANY($1::uuid[]))`,
+        [creados],
+      );
+      await dataSource.query(
+        `DELETE FROM notifications WHERE user_id = ANY($1::uuid[])`,
+        [creados],
+      );
+    }
+    await dataSource.query(
+      `ALTER TABLE notification_deliveries ENABLE TRIGGER trg_notification_deliveries_immutable`,
     );
 
     await dataSource.query(`DELETE FROM credit_accounts WHERE venue_id = $1`, [
@@ -231,10 +260,42 @@ describe('Expiración de créditos (e2e)', () => {
     const avisadas = await expiry.avisarSaldosPorExpirar();
     expect(avisadas).toBeGreaterThanOrEqual(1);
 
-    const mio = notificador.avisos.find((a) => a.email === cliente.email);
+    // ---- CANAL 1: el correo -----------------------------------
+    const mio = correo.para(cliente.email);
     expect(mio).toBeDefined();
-    expect(mio?.balance).toBe(12);
-    expect(mio?.venueName).toBe(venue.name);
+    expect(mio?.subject).toContain(venue.name);
+    expect(mio?.text).toContain('Q12');
+
+    // ---- CANAL 2: el mensaje dentro de la app -----------------
+    // Los dos, no uno u otro: el correo puede caer en spam y el mensaje
+    // en la app solo lo ve quien entra.
+    const [enApp] = await dataSource.query<
+      Array<{ title: string; body: string; email_status: string }>
+    >(
+      `SELECT title, body, email_status FROM notifications
+        WHERE user_id = $1 AND type = 'credits_expiring'`,
+      [cliente.id],
+    );
+    expect(enApp).toBeDefined();
+    expect(enApp.title).toContain('Q12');
+    expect(enApp.email_status).toBe('sent');
+
+    // ---- LA BITÁCORA ------------------------------------------
+    // Sin registro de qué se mandó y a quién, no se puede demostrar que
+    // se avisó — y eso es lo que respalda quitarle el saldo a alguien.
+    const [bitacora] = await dataSource.query<
+      Array<{ channel: string; status: string; destination: string }>
+    >(
+      `SELECT d.channel, d.status, d.destination
+         FROM notification_deliveries d
+         JOIN notifications n ON n.id = d.notification_id
+        WHERE n.user_id = $1 AND d.channel = 'email'`,
+      [cliente.id],
+    );
+    expect(bitacora).toBeDefined();
+    expect(bitacora.status).toBe('sent');
+    expect(bitacora.destination).toBe(cliente.email);
+
     expect(await avisoDe(cliente.id)).not.toBeNull();
 
     // Y el saldo sigue intacto: avisar no es cobrar.
@@ -250,16 +311,12 @@ describe('Expiración de créditos (e2e)', () => {
     await envejecerCuenta(cliente.id, 12);
 
     await expiry.avisarSaldosPorExpirar();
-    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
-      true,
-    );
+    expect(correo.para(cliente.email)).toBeDefined();
 
     // Segunda corrida el mismo día: la marca la deja fuera del WHERE.
-    notificador.reiniciar();
+    correo.reiniciar();
     await expiry.avisarSaldosPorExpirar();
-    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
-      false,
-    );
+    expect(correo.paraNadie(cliente.email)).toBe(true);
   }, 60000);
 
   it('3) una cuenta avisada y vencida expira como renglón del libro mayor', async () => {
@@ -306,7 +363,7 @@ describe('Expiración de créditos (e2e)', () => {
     await envejecerCuenta(cliente.id, 14);
 
     // El servidor de correo está caído.
-    notificador.falla = true;
+    correo.falla = true;
     const avisadas = await expiry.avisarSaldosPorExpirar();
 
     // No se avisó a nadie, y la cuenta quedó SIN marcar — mañana se
@@ -317,6 +374,33 @@ describe('Expiración de créditos (e2e)', () => {
     // Y aunque lleve 14 meses vencida, el job de expiración no la toca.
     await expiry.expirarSaldosInactivos();
     expect(await saldoDe(cliente.id)).toBe(30);
+
+    // El mensaje EN LA APP sí existe: el aviso se creó, lo que falló fue
+    // el correo. Pero eso NO alcanza para expirar — quien no entra en
+    // doce meses tampoco va a ver el mensaje, y es exactamente el
+    // cliente al que estamos por quitarle el dinero.
+    const [enApp] = await dataSource.query<Array<{ email_status: string }>>(
+      `SELECT email_status FROM notifications
+        WHERE user_id = $1 AND type = 'credits_expiring'`,
+      [cliente.id],
+    );
+    expect(enApp).toBeDefined();
+    expect(enApp.email_status).toBe('failed');
+
+    // Y el fallo quedó en la bitácora con su motivo. Sin ese registro no
+    // habría forma de saber por qué esa cuenta lleva meses sin expirar.
+    const [bitacora] = await dataSource.query<
+      Array<{ status: string; error: string | null }>
+    >(
+      `SELECT d.status, d.error
+         FROM notification_deliveries d
+         JOIN notifications n ON n.id = d.notification_id
+        WHERE n.user_id = $1 AND d.channel = 'email'`,
+      [cliente.id],
+    );
+    expect(bitacora).toBeDefined();
+    expect(bitacora.status).toBe('failed');
+    expect(bitacora.error).toContain('SMTP');
   }, 60000);
 
   it('5) si el cliente vuelve, el aviso se borra y ya no expira', async () => {
@@ -353,9 +437,7 @@ describe('Expiración de créditos (e2e)', () => {
     });
 
     await expiry.avisarSaldosPorExpirar();
-    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
-      false,
-    );
+    expect(correo.paraNadie(cliente.email)).toBe(true);
 
     await expiry.expirarSaldosInactivos();
     expect(await saldoDe(cliente.id)).toBe(20);
@@ -376,9 +458,7 @@ describe('Expiración de créditos (e2e)', () => {
     await envejecerCuenta(cliente.id, 36); // tres años quieta
 
     await expiry.avisarSaldosPorExpirar();
-    expect(notificador.avisos.some((a) => a.email === cliente.email)).toBe(
-      false,
-    );
+    expect(correo.paraNadie(cliente.email)).toBe(true);
 
     await expiry.expirarSaldosInactivos();
     expect(await saldoDe(cliente.id)).toBe(40);
@@ -421,5 +501,111 @@ describe('Expiración de créditos (e2e)', () => {
       .set('Authorization', `Bearer ${dj.token}`)
       .send({ creditExpiryMonths: 1 })
       .expect(403);
+  }, 60000);
+
+  // ==============================================================
+  // CAMBIO DE REGLAS — solo se avisa cuando el riesgo AUMENTA
+  // ==============================================================
+  it('10) si el dueño acorta el plazo, se avisa a quien tiene saldo', async () => {
+    const conSaldo = await crearUsuario({
+      etiqueta: 'afectado',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 25,
+    });
+    const sinSaldo = await crearUsuario({
+      etiqueta: 'sinsaldo',
+      rol: ROL_VENUE_ADMIN,
+    });
+
+    // Se le avisó bajo el plazo viejo: la marca queda puesta.
+    await envejecerCuenta(conSaldo.id, 12);
+    await expiry.avisarSaldosPorExpirar();
+    expect(await avisoDe(conSaldo.id)).not.toBeNull();
+
+    // El dueño baja de 12 a 3 meses.
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: 3 })
+      .expect(200);
+
+    const [aviso] = await dataSource.query<
+      Array<{ title: string; body: string; email_status: string }>
+    >(
+      `SELECT title, body, email_status FROM notifications
+        WHERE user_id = $1 AND type = 'rules_changed'`,
+      [conSaldo.id],
+    );
+    expect(aviso).toBeDefined();
+    expect(aviso.body).toContain('Q25');
+    expect(aviso.body).toContain('3 meses');
+    // El correo lo agrupa el job de la mañana: un cambio de política no
+    // dispara cien correos de golpe.
+    expect(aviso.email_status).toBe('pending');
+
+    // A quien tiene cero no le cambia nada, así que no se le escribe.
+    const deNadie = await dataSource.query<Array<{ id: string }>>(
+      `SELECT id FROM notifications WHERE user_id = $1`,
+      [sinSaldo.id],
+    );
+    expect(deNadie).toHaveLength(0);
+
+    // LA PARTE QUE PROTEGE EL DINERO: el aviso previo se reinicia.
+    //
+    // Sin esto, la cuenta seguía marcada como avisada bajo el plazo VIEJO
+    // y podía expirar casi de inmediato con el plazo nuevo — perdiendo el
+    // saldo por un cambio que el cliente no pidió.
+    expect(await avisoDe(conSaldo.id)).toBeNull();
+
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: MESES_DE_EXPIRACION })
+      .expect(200);
+  }, 60000);
+
+  it('11) alargar el plazo o ponerlo en "nunca" NO genera aviso', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'buenanoticia',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 15,
+    });
+
+    // De 12 a 24: el dinero está MÁS seguro. No se molesta a nadie.
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: 24 })
+      .expect(200);
+
+    // De 24 a 0 ("nunca expiran"): mejor todavía.
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: 0 })
+      .expect(200);
+
+    const avisos = await dataSource.query<Array<{ id: string }>>(
+      `SELECT id FROM notifications
+        WHERE user_id = $1 AND type = 'rules_changed'`,
+      [cliente.id],
+    );
+    expect(avisos).toHaveLength(0);
+
+    // PERO de 0 a 12 SÍ avisa: dinero que estaba a salvo ahora tiene
+    // fecha de vencimiento. Es el peor caso, y una comparación ingenua
+    // (`12 < 0`) lo leería como una mejora.
+    await request(app.getHttpServer())
+      .patch(`/venues/${venue.id}/policies`)
+      .set('Authorization', `Bearer ${tokenAdmin}`)
+      .send({ creditExpiryMonths: MESES_DE_EXPIRACION })
+      .expect(200);
+
+    const despues = await dataSource.query<Array<{ id: string }>>(
+      `SELECT id FROM notifications
+        WHERE user_id = $1 AND type = 'rules_changed'`,
+      [cliente.id],
+    );
+    expect(despues).toHaveLength(1);
   }, 60000);
 });

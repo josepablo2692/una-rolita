@@ -21,7 +21,13 @@ import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Notification, NotificationType } from './entities/notification.entity';
 import { NotificationDelivery } from './entities/notification-delivery.entity';
-import { MAILER, Mailer } from './mailer.interface';
+import { MAILER } from './mailer.interface';
+// `import type` y no un import normal: con isolatedModules +
+// emitDecoratorMetadata, un TIPO usado en una firma decorada (aquí el
+// constructor con @Inject) tiene que importarse así. Si no, tsc intenta
+// emitir metadata de algo que no existe en tiempo de ejecución y falla
+// con TS1272. Mismo patrón que `import type { OtpSender }` en otp.service.
+import type { Mailer } from './mailer.interface';
 
 export interface CrearAvisoParams {
   userId: string;
@@ -98,6 +104,87 @@ export class NotificationsService {
     return params.manager
       ? escribir(params.manager)
       : this.dataSource.transaction(escribir);
+  }
+
+  // ==============================================================
+  // Crear un aviso Y mandarlo AHORA. Devuelve si el correo salió.
+  // ==============================================================
+  //
+  // Existe para UN caso: el aviso previo de expiración de saldo. Es el
+  // único aviso cuyo correo hay que CONFIRMAR antes de actuar, porque lo
+  // que viene después es quitarle el dinero a alguien. Si el correo no
+  // salió, quien llama no debe marcar la cuenta como avisada.
+  //
+  // Los demás avisos usan crear(): pueden esperar al job de la mañana,
+  // y nada malo pasa si el correo se atrasa un día.
+  //
+  // NUNCA dentro de la transacción de otro: manda un correo, y un correo
+  // enviado no se puede deshacer con un rollback.
+  async crearYEnviarAhora(
+    params: Omit<CrearAvisoParams, 'porCorreo' | 'manager'> & {
+      email: string;
+      asunto: string;
+      cuerpoCorreo: string;
+    },
+  ): Promise<{ aviso: Notification; correoEnviado: boolean }> {
+    const aviso = await this.crear({
+      userId: params.userId,
+      venueId: params.venueId,
+      type: params.type,
+      title: params.title,
+      body: params.body,
+      data: params.data,
+      // 'pending' sería mentira: no lo va a mandar el job, lo mandamos
+      // aquí mismo en la línea siguiente.
+      porCorreo: false,
+    });
+
+    try {
+      await this.mailer.enviar({
+        to: params.email,
+        subject: params.asunto,
+        text: params.cuerpoCorreo,
+      });
+
+      await this.registrarEnvio(aviso.id, params.email, 'sent', null);
+      return { aviso, correoEnviado: true };
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : String(error);
+
+      await this.registrarEnvio(aviso.id, params.email, 'failed', detalle);
+
+      this.logger.error(
+        `No se pudo mandar el aviso ${aviso.id} a ${params.email}`,
+        error instanceof Error ? error.stack : detalle,
+      );
+
+      // El aviso EXISTE (el cliente lo verá en la app) pero el correo no
+      // salió. Quien llama decide qué hacer con eso.
+      return { aviso, correoEnviado: false };
+    }
+  }
+
+  // Registra un envío individual en las dos tablas.
+  private async registrarEnvio(
+    notificationId: string,
+    destino: string,
+    estado: 'sent' | 'failed',
+    error: string | null,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      await manager.update(Notification, notificationId, {
+        emailStatus: estado,
+      });
+      await manager.save(
+        manager.create(NotificationDelivery, {
+          notificationId,
+          channel: 'email',
+          status: estado,
+          destination: destino,
+          error,
+        }),
+      );
+    });
   }
 
   // ==============================================================

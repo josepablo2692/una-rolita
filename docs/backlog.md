@@ -117,8 +117,8 @@ de "ahorita no es necesario".
 | 1   | Reversión (nota de crédito) + auditoría visible           | PR 3 ✅ |
 | 2   | Cierre de noche (`venue_sessions` + cierre automático)    | PR 4 ✅ |
 | 3   | Expiración de créditos por inactividad                    | PR 5 ✅ |
-| 4   | Avisos al cliente: correo + mensaje en app                | PR 6 ←  |
-| 5   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 7    |
+| 4   | Avisos al cliente: correo + mensaje en app                | PR 6 ✅ |
+| 5   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 7 ←  |
 | 6   | Código efímero + QR — la parte de BACKEND                 | PR 8    |
 
 **Decisión del 20\ago — qué entra antes del 31.** Se elige cerrar Épica 3
@@ -287,17 +287,31 @@ en ningún precio publicado.
       con el cliente. Son dos jobs (`@Cron` diario, 4 a.m. avisar y 5 a.m.
       expirar) y `expiry_warning_sent_at` vuelve a NULL en cada
       movimiento, para no dejar sin aviso al cliente que sí regresó
-- [ ] **Avisos al cliente sobre su dinero — correo Y mensaje dentro de la
-      app, los dos canales.** Un crédito que se mueve sin que el cliente se
-      entere es indistinguible de un robo desde su lado. El correo puede
-      caer en spam; el mensaje en la app solo lo ve quien entra. Tres usos,
-      un solo mecanismo: (a) **reembolso al cerrar la noche** — hoy solo se
-      emite por WebSocket, así que quien cerró la app nunca se entera;
-      (b) **aviso previo de expiración**, N días antes — el canal de
-      correo YA existe (`ExpiryNotifier` + `EmailExpiryNotifier`, PR 5);
-      falta el de la app; (c) **cambios de
-      reglas de negocio**. Necesita bitácora de envíos: sin registro de qué
-      se mandó y a quién, no se puede demostrar que se avisó
+- [x] **Avisos al cliente sobre su dinero — PR 6.** Correo Y mensaje dentro
+      de la app, los dos canales. Un crédito que se mueve sin que el cliente
+      se entere es indistinguible de un robo desde su lado: el correo puede
+      caer en spam y el mensaje en la app solo lo ve quien entra.
+
+      `notifications` (el mensaje, que ES el canal in-app) +
+      `notification_deliveries` (la bitácora de intentos, append-only con
+      trigger). `NotificationsService` con `NodemailerMailer` como
+      transporte único. Endpoints `GET /me/notifications` ·
+      `/unread-count` · `PATCH /:id/read`.
+
+      Los tres usos, todos conectados:
+      (a) **reembolso al cerrar la noche** — mensaje al instante, correo
+      agrupado a las 9 a.m. Se acumula por persona, no por pedido;
+      (b) **aviso previo de expiración** — por los dos canales, con
+      `crearYEnviarAhora()` porque es el único aviso cuyo correo hay que
+      CONFIRMAR antes de actuar;
+      (c) **cambio de reglas** — al acortar `credit_expiry_months` se avisa
+      a quien tiene saldo y se reinicia su `expiry_warning_sent_at`, para
+      que nadie pierda dinero por un cambio que no pidió.
+
+      **Dos métodos con contratos distintos:** `crear()` solo escribe y es
+      seguro dentro de una transacción; `crearYEnviarAhora()` manda y
+      devuelve si el correo salió, y nunca va dentro de una transacción —
+      un correo enviado no se deshace con un rollback.
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
 - [x] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
 - [ ] Modelo de `Tip` (propina) independiente de `credits` — no comparte tabla ni lógica de gasto. Campo de destino: venue por defecto, artista si "modo artista" está activo
@@ -582,20 +596,101 @@ es la razón por la que hoy los roles se asignan en el seed.
       nunca se restauró no se sabe si sirve. Levantar una base vacía y
       recuperar el volcado completo
 
-## Épica 8 — Analítica y KPIs (fase 2, requiere datos históricos acumulados)
+## Épica 8 — Analítica, BI y datos para patrocinadores (fase 2)
 
-- [ ] Análisis de géneros más pedidos por local — insumo para promociones dirigidas
-- [ ] KPIs de estacionalidad (día de la semana, hora pico) por local
-- [ ] Popularidad de canciones/artistas por local y agregado global
-- [ ] Desempeño histórico como base para sugerencias de promociones al admin (ej. "los jueves baja tu tráfico, considera una promo de créditos")
-- [ ] Internacionalización (i18n): soporte para español e inglés en el frontend/respuestas al usuario, inglés como idioma base del sistema
-- [ ] Definir mecanismo (ej. nestjs-i18n, o diccionario de strings por locale) — decisión pendiente, no es de esta fase.
-- [ ] Credenciales OAuth adicionales (Android/iOS) cuando exista app móvil nativa — backend no cambia
-- [ ] Botón opcional "Síguenos en WhatsApp" (link wa.me) al pedir número de teléfono — incentivo, NUNCA obligatorio (contradice regla de 3 clics)
-- [ ] Verificar reglas reales de visibilidad de Estados de WhatsApp antes de diseñar la estrategia (¿requiere guardado mutuo?)
-- [ ] Vista de facturación: créditos emitidos por venue y por mes,
-      derivada del ledger. Insumo para decidir el modelo de precios
-      después del piloto.
+**Prerrequisito duro:** requiere Épica 3 completa. Sin el sistema de
+créditos y transacciones no hay `amount_paid` ni `payment_method` que
+registrar. Al 20\ago faltan PR 7 (propinas) y PR 8 (código efímero).
+
+**Por qué esta épica es el activo del negocio, no un reporte bonito:** el
+producto le cobra Q1 a un cliente, pero el dato de qué se pide, dónde, a
+qué hora y quién lo paga es lo que se negocia con un patrocinador. Es la
+diferencia entre vender canciones y vender alcance.
+
+### Story 1 — Captura de eventos de analítica
+
+- [ ] Emitir un **evento de dominio** (`@nestjs/event-emitter`) cada vez
+      que una canción se reproduce con éxito, sin bloquear la respuesta al
+      cliente ni el WebSocket. El punto de disparo natural ya existe:
+      `queue.service.markAsPlayed`, que es donde hoy se escribe
+      `venue_song_history`.
+
+      **NO es un NestInterceptor.** Un interceptor envuelve una petición
+      HTTP y no sabe nada del negocio; un evento de dominio dice "pasó algo
+      que importa" y desacopla a quien lo escucha. Confundirlos ata la
+      analítica al transporte, y el día que una canción se marque como
+      reproducida desde un job o un WebSocket, el interceptor no se entera
+- [ ] Extraer metadata del proveedor de música (Spotify/YouTube): artista,
+      título, duración.
+
+      **RIESGO CONOCIDO — género:** Spotify NO expone género por canción,
+      solo por artista y de forma inconsistente. Evaluar fuente alterna
+      (MusicBrainz, Last.fm) o inferencia manual. Si Story 3 y 4 dependen
+      del género, este riesgo las bloquea a las dos
+- [ ] Persistir: `venue_id`, `track_id`, `artist_name`, `genre` (nullable),
+      `amount_paid`, `payment_method`, `created_at`.
+
+      `payment_method` reusa el enum que YA existe en
+      `credit_transactions` (`schema.sql`): `efectivo_recepcion` ·
+      `tarjeta_recepcion` · `transferencia_directa` · **`recurrente`**
+      (ojo: es `recurrente`, no `recurrente_online`)
+
+### Story 2 — Esquema analítico separado
+
+- [ ] Tabla `song_requests_analytics`, **denormalizada a propósito** y
+      separada de las transaccionales (`queue_requests`,
+      `credit_transactions`) para que un reporte pesado no degrade el
+      camino por donde se cobra
+- [ ] **REQUIERE ADR** (sería el 0008): documentar por qué se separa en vez
+      de consultar directo las tablas operativas. Trade-off: datos
+      duplicados y desnormalizados a cambio de lecturas rápidas.
+
+      El ADR debe responder además: ¿cuál es la fuente de verdad si los
+      números no cuadran? La respuesta tiene que ser el ledger, siempre —
+      esta tabla es una proyección, no un registro contable
+- [ ] Índices compuestos en `(venue_id, created_at)` y `(genre, created_at)`
+- [ ] Agregar `zone` o `region` a `venues` — **no existe hoy**. Es
+      prerrequisito de Story 4: sin eso no hay forma de filtrar por zona
+      geográfica. Cambio de esquema pequeño, hacerlo temprano
+
+### Story 3 — Dashboard del local (dueño del venue)
+
+- [ ] `GET /analytics/venues/:venueId/summary?startDate=&endDate=`
+- [ ] KPIs: top 5 géneros por franja horaria, horas pico, distribución por
+      método de pago, total recaudado, canciones reproducidas vs.
+      saltadas/canceladas.
+
+      Las métricas de sesión de PR 4 (`GET .../queue/sessions/:id`) ya
+      calculan varias de éstas por noche. Esta story las agrega en el
+      tiempo; conviene reusar esas consultas antes de escribir otras
+
+### Story 4 — Reportes globales para patrocinadores
+
+- [ ] `GET /analytics/global/trends?zone=&startDate=&endDate=`
+- [ ] Agregaciones: artistas y canciones trending por semana/mes,
+      distribución de género por zona, días y horas de mayor volumen
+      transaccional
+- [ ] **DECISIÓN PENDIENTE, no técnica:** qué se le vende exactamente a un
+      patrocinador y bajo qué términos. Datos agregados y anónimos es una
+      cosa; cualquier cosa que permita reidentificar a una persona es otra,
+      y toca los términos y condiciones que faltan redactar (Épica 7).
+      Definirlo ANTES de construir el endpoint
+
+### Otros pendientes de fase 2 (no son analítica)
+
+- [ ] Internacionalización (i18n): español e inglés, inglés como idioma
+      base del sistema
+- [ ] Definir mecanismo de i18n (nestjs-i18n o diccionario por locale)
+- [ ] Credenciales OAuth adicionales (Android/iOS) cuando exista app móvil
+      nativa — el backend no cambia
+- [ ] Botón opcional "Síguenos en WhatsApp" (link wa.me) al pedir teléfono
+      — incentivo, NUNCA obligatorio (contradice la regla de 3 clics)
+- [ ] Verificar las reglas reales de visibilidad de Estados de WhatsApp
+      antes de diseñar la estrategia (¿requiere guardado mutuo?)
+- [ ] Sugerencias de promociones al admin basadas en desempeño histórico
+      (ej. "los jueves baja tu tráfico, considerá una promo de créditos")
+- [ ] Vista de facturación: créditos emitidos por venue y por mes, derivada
+      del ledger. Insumo para el modelo de precios después del piloto
 
 ### Hallazgos nuevos, diferidos
 
