@@ -21,7 +21,13 @@ import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Notification, NotificationType } from './entities/notification.entity';
 import { NotificationDelivery } from './entities/notification-delivery.entity';
-import { MAILER, Mailer } from './mailer.interface';
+import { MAILER } from './mailer.interface';
+// `import type` y no un import normal: con isolatedModules +
+// emitDecoratorMetadata, un TIPO usado en una firma decorada (aquí el
+// constructor con @Inject) tiene que importarse así. Si no, tsc intenta
+// emitir metadata de algo que no existe en tiempo de ejecución y falla
+// con TS1272. Mismo patrón que `import type { OtpSender }` en otp.service.
+import type { Mailer } from './mailer.interface';
 
 export interface CrearAvisoParams {
   userId: string;
