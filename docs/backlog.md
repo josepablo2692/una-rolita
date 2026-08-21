@@ -117,8 +117,8 @@ de "ahorita no es necesario".
 | 1   | Reversión (nota de crédito) + auditoría visible           | PR 3 ✅ |
 | 2   | Cierre de noche (`venue_sessions` + cierre automático)    | PR 4 ✅ |
 | 3   | Expiración de créditos por inactividad                    | PR 5 ✅ |
-| 4   | Avisos al cliente: correo + mensaje en app                | PR 6 ←  |
-| 5   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 7    |
+| 4   | Avisos al cliente: correo + mensaje en app                | PR 6 ✅ |
+| 5   | Propinas: modelo `Tip`, modo artista, renglones separados | PR 7 ←  |
 | 6   | Código efímero + QR — la parte de BACKEND                 | PR 8    |
 
 **Decisión del 20\ago — qué entra antes del 31.** Se elige cerrar Épica 3
@@ -287,17 +287,31 @@ en ningún precio publicado.
       con el cliente. Son dos jobs (`@Cron` diario, 4 a.m. avisar y 5 a.m.
       expirar) y `expiry_warning_sent_at` vuelve a NULL en cada
       movimiento, para no dejar sin aviso al cliente que sí regresó
-- [ ] **Avisos al cliente sobre su dinero — correo Y mensaje dentro de la
-      app, los dos canales.** Un crédito que se mueve sin que el cliente se
-      entere es indistinguible de un robo desde su lado. El correo puede
-      caer en spam; el mensaje en la app solo lo ve quien entra. Tres usos,
-      un solo mecanismo: (a) **reembolso al cerrar la noche** — hoy solo se
-      emite por WebSocket, así que quien cerró la app nunca se entera;
-      (b) **aviso previo de expiración**, N días antes — el canal de
-      correo YA existe (`ExpiryNotifier` + `EmailExpiryNotifier`, PR 5);
-      falta el de la app; (c) **cambios de
-      reglas de negocio**. Necesita bitácora de envíos: sin registro de qué
-      se mandó y a quién, no se puede demostrar que se avisó
+- [x] **Avisos al cliente sobre su dinero — PR 6.** Correo Y mensaje dentro
+      de la app, los dos canales. Un crédito que se mueve sin que el cliente
+      se entere es indistinguible de un robo desde su lado: el correo puede
+      caer en spam y el mensaje en la app solo lo ve quien entra.
+
+      `notifications` (el mensaje, que ES el canal in-app) +
+      `notification_deliveries` (la bitácora de intentos, append-only con
+      trigger). `NotificationsService` con `NodemailerMailer` como
+      transporte único. Endpoints `GET /me/notifications` ·
+      `/unread-count` · `PATCH /:id/read`.
+
+      Los tres usos, todos conectados:
+      (a) **reembolso al cerrar la noche** — mensaje al instante, correo
+      agrupado a las 9 a.m. Se acumula por persona, no por pedido;
+      (b) **aviso previo de expiración** — por los dos canales, con
+      `crearYEnviarAhora()` porque es el único aviso cuyo correo hay que
+      CONFIRMAR antes de actuar;
+      (c) **cambio de reglas** — al acortar `credit_expiry_months` se avisa
+      a quien tiene saldo y se reinicia su `expiry_warning_sent_at`, para
+      que nadie pierda dinero por un cambio que no pidió.
+
+      **Dos métodos con contratos distintos:** `crear()` solo escribe y es
+      seguro dentro de una transacción; `crearYEnviarAhora()` manda y
+      devuelve si el correo salió, y nunca va dentro de una transacción —
+      un correo enviado no se deshace con un rollback.
 - [ ] Integración con Recurrente (transferencias, checkout, Tap to Pay) como método de pago alterno al manual — arquitectura vía interfaz `PaymentMethod`, mismo patrón que `OtpSender` (ver ADR 0004)
 - [x] Regla fija: los créditos siempre pertenecen al dueño del venue registrado — sin split, sin excepción (ADR 0004)
 - [ ] Modelo de `Tip` (propina) independiente de `credits` — no comparte tabla ni lógica de gasto. Campo de destino: venue por defecto, artista si "modo artista" está activo

@@ -11,12 +11,19 @@
 // caído un mes entero, no expira nada. Es el modo de falla correcto —
 // ante la duda, el dinero se queda con el cliente.
 
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { CreditsService } from '../credits.service';
-import { EXPIRY_NOTIFIER, ExpiryNotifier } from './expiry-notifier.interface';
+import { NotificationsService } from '../../notifications/notifications.service';
+
+// Formatea la fecha como la lee alguien en Guatemala: 15/03/2027.
+const FORMATO_GT = new Intl.DateTimeFormat('es-GT', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+});
 
 // Cuántos días antes del vencimiento se avisa.
 //
@@ -28,6 +35,8 @@ const DIAS_DE_AVISO_PREVIO = 30;
 
 interface FilaPorAvisar {
   id: string;
+  user_id: string;
+  venue_id: string;
   balance: number;
   email: string;
   display_name: string | null;
@@ -50,8 +59,7 @@ export class CreditExpiryService {
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly creditsService: CreditsService,
-    @Inject(EXPIRY_NOTIFIER)
-    private readonly notifier: ExpiryNotifier,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ==============================================================
@@ -65,6 +73,8 @@ export class CreditExpiryService {
     // se olvida.
     const porAvisar = await this.dataSource.query<FilaPorAvisar[]>(
       `SELECT ca.id,
+              ca.user_id,
+              ca.venue_id,
               ca.balance,
               u.email,
               u.display_name,
@@ -86,39 +96,70 @@ export class CreditExpiryService {
     let avisadas = 0;
 
     for (const fila of porAvisar) {
-      try {
-        await this.notifier.avisar({
-          email: fila.email,
-          displayName: fila.display_name,
-          venueName: fila.venue_name,
-          balance: fila.balance,
-          expiraEl: new Date(fila.expira_el),
-        });
+      const expiraEl = new Date(fila.expira_el);
+      const fecha = FORMATO_GT.format(expiraEl);
+      const nombre = fila.display_name ?? 'Hola';
 
-        // La marca se pone DESPUÉS de que el envío salió bien. Si se
-        // pusiera antes y el correo fallara, la cuenta quedaría marcada
-        // como avisada sin que nadie la haya avisado — y el job de
-        // expiración la tomaría como lista para perder el saldo.
-        //
-        // El costo de este orden es que un fallo a mitad de camino puede
-        // mandar el correo dos veces. Molestar a alguien con un correo
-        // repetido es infinitamente preferible a quitarle el dinero en
-        // silencio.
+      // El aviso sale por los DOS canales: queda como mensaje en la app
+      // (la fila de notifications) y se manda el correo en el momento.
+      //
+      // crearYEnviarAhora y no crear(): este es el único aviso cuyo
+      // correo hay que CONFIRMAR antes de actuar, porque lo que sigue es
+      // quitarle el saldo a alguien. Los demás pueden esperar al job de
+      // la mañana.
+      const { correoEnviado } = await this.notifications.crearYEnviarAhora({
+        userId: fila.user_id,
+        venueId: fila.venue_id,
+        type: 'credits_expiring',
+        title: `Tenés Q${fila.balance} sin usar en ${fila.venue_name}`,
+        body:
+          `Tus créditos en ${fila.venue_name} vencen el ${fecha}. ` +
+          `Para conservarlos solo tenés que usarlos: pedí una canción ` +
+          `antes de esa fecha y el plazo vuelve a empezar.`,
+        data: {
+          creditos: fila.balance,
+          expiraEl: expiraEl.toISOString(),
+          venueName: fila.venue_name,
+        },
+        email: fila.email,
+        asunto: `Tus créditos en ${fila.venue_name} vencen el ${fecha}`,
+        cuerpoCorreo: [
+          `${nombre},`,
+          ``,
+          `Tenés Q${fila.balance} en créditos en ${fila.venue_name} que no has usado.`,
+          ``,
+          `Vencen el ${fecha}.`,
+          ``,
+          `Para conservarlos solo tenés que usarlos: pedí una canción en`,
+          `${fila.venue_name} antes de esa fecha y el plazo vuelve a empezar.`,
+          ``,
+          `Una Rolita`,
+        ].join('\n'),
+      });
+
+      // LA LÍNEA QUE PROTEGE AL CLIENTE.
+      //
+      // La marca se pone SOLO si el correo salió. Si se pusiera siempre,
+      // un servidor de correo caído dejaría la cuenta marcada como
+      // avisada sin que nadie la haya avisado — y el job de expiración
+      // la tomaría como lista para perder el saldo.
+      //
+      // El mensaje en la app no alcanza como prueba de aviso: quien no
+      // entra en doce meses tampoco lo va a ver, y ése es exactamente el
+      // cliente al que estamos por expirarle el dinero.
+      //
+      // El costo es que un fallo a mitad de camino puede mandar el correo
+      // dos veces. Molestar a alguien con un correo repetido es
+      // infinitamente preferible a quitarle el dinero en silencio.
+      if (correoEnviado) {
         await this.dataSource.query(
           `UPDATE credit_accounts SET expiry_warning_sent_at = now() WHERE id = $1`,
           [fila.id],
         );
-
         avisadas += 1;
-      } catch (error) {
-        // Un aviso que falla no puede dejar sin avisar a los demás. Se
-        // registra y se sigue; mañana se reintenta solo, porque la cuenta
-        // quedó sin marcar.
-        this.logger.error(
-          `No se pudo avisar la expiración de la cuenta ${fila.id}`,
-          error instanceof Error ? error.stack : String(error),
-        );
       }
+      // Si no salió, la cuenta queda sin marcar y mañana se reintenta
+      // sola. crearYEnviarAhora ya registró el fallo en la bitácora.
     }
 
     if (avisadas > 0) {
