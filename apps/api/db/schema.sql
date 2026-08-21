@@ -415,6 +415,122 @@ CREATE TABLE promotions (
 );
 
 -- ------------------------------------------------------------
+-- Avisos al cliente
+--
+-- SON DOS TABLAS Y NO UNA, a propósito:
+--
+--   notifications           = EL MENSAJE. Una fila es un aviso que el
+--                             cliente ve dentro de la app. No hay que
+--                             "enviarlo": existir ES el canal in-app.
+--   notification_deliveries = LA BITÁCORA. Una fila por cada intento de
+--                             mandar ese mensaje por un canal externo,
+--                             con su resultado y su error.
+--
+-- Son cosas distintas: "le avisamos a Ana" y "el correo a Ana rebotó
+-- tres veces". Si vivieran juntas, cada reintento ensuciaría el mensaje
+-- que Ana ve en pantalla.
+--
+-- Es el mismo par que ya usamos con el dinero: credit_accounts.balance
+-- es el ESTADO (lo que hay ahora) y credit_transactions es la HISTORIA
+-- (todo lo que pasó, append-only). Aquí notifications lleva el estado
+-- del despacho y deliveries lleva la historia de intentos.
+-- ------------------------------------------------------------
+
+CREATE TABLE notifications (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+    -- Nullable: un cambio de reglas de la plataforma no pertenece a
+    -- ningún local. ON DELETE SET NULL y no CASCADE — si un local cierra,
+    -- el aviso de que le devolvimos Q5 a alguien no debe desaparecer.
+    venue_id    UUID REFERENCES venues(id) ON DELETE SET NULL,
+
+    type        VARCHAR(40) NOT NULL CHECK (type IN (
+                    'refund_night_close',   -- se cerró la noche y se le devolvió
+                    'credits_expiring',     -- aviso previo de expiración
+                    'credits_expired',      -- ya expiró
+                    'rules_changed')),      -- cambio de reglas de negocio
+
+    title       VARCHAR(150) NOT NULL,
+    body        TEXT NOT NULL,
+
+    -- Datos crudos del aviso (monto, id del pedido, fecha de vencimiento).
+    -- Permite que la app arme su propia presentación sin volver a
+    -- consultar, y que el texto cambie sin perder el dato.
+    data        JSONB,
+
+    read_at     TIMESTAMPTZ,
+
+    -- Máquina de estados del correo. El mensaje in-app ya está entregado
+    -- por el solo hecho de existir; esto solo gobierna el canal externo.
+    --
+    -- 'pending' = el job matutino lo tiene que mandar. El reembolso de
+    -- cierre de noche nace así: el mensaje aparece en la app a las 2 a.m.
+    -- pero el correo se manda agrupado a las 9, para no despertar a nadie
+    -- con un correo por cada canción que no sonó.
+    email_status VARCHAR(20) NOT NULL DEFAULT 'not_applicable'
+                    CHECK (email_status IN
+                        ('not_applicable', 'pending', 'sent', 'failed')),
+
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- La bandeja del cliente: sus avisos, más reciente primero.
+CREATE INDEX idx_notifications_usuario
+    ON notifications (user_id, created_at DESC);
+
+-- Índice PARCIAL para el contador de "no leídos". Los avisos ya leídos
+-- —que con el tiempo son casi todos— ni entran al índice.
+CREATE INDEX idx_notifications_sin_leer
+    ON notifications (user_id) WHERE read_at IS NULL;
+
+-- Índice PARCIAL para el job matutino: solo le importan los que esperan
+-- correo. Va por user_id además de la fecha porque el job AGRUPA por
+-- persona — un solo correo con todo lo de anoche, no uno por aviso.
+CREATE INDEX idx_notifications_correo_pendiente
+    ON notifications (user_id, created_at) WHERE email_status = 'pending';
+
+
+CREATE TABLE notification_deliveries (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+
+    channel         VARCHAR(20) NOT NULL CHECK (channel IN ('email', 'in_app')),
+    status          VARCHAR(20) NOT NULL CHECK (status IN ('sent', 'failed')),
+
+    -- A dónde se mandó, tal como estaba en ese momento. Se guarda copiado
+    -- y no por referencia a users.email: si mañana el cliente cambia de
+    -- correo, la bitácora tiene que seguir diciendo a dónde se mandó
+    -- REALMENTE. Una bitácora que se actualiza sola no prueba nada.
+    destination     VARCHAR(255),
+
+    error           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_notification_deliveries_aviso
+    ON notification_deliveries (notification_id, created_at DESC);
+
+-- Append-only, igual que el libro mayor. Una bitácora que se puede editar
+-- no sirve para demostrar nada — y con la expiración de créditos esto
+-- dejó de ser un detalle técnico.
+--
+-- Función GENÉRICA (usa TG_TABLE_NAME) en vez de copiar la de
+-- credit_transactions, que tiene su mensaje cableado adentro.
+CREATE OR REPLACE FUNCTION reject_table_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION
+        '% es append-only: % no permitido. Para corregir, inserte una fila nueva.',
+        TG_TABLE_NAME, TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_notification_deliveries_immutable
+    BEFORE UPDATE OR DELETE ON notification_deliveries
+    FOR EACH ROW EXECUTE FUNCTION reject_table_mutation();
+
+-- ------------------------------------------------------------
 -- Auditoría general
 -- ------------------------------------------------------------
 

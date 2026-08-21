@@ -12,6 +12,7 @@ import { QueueController } from './queue.controller';
 import { QueueService } from './queue.service';
 import { QueueGateway } from './queue.gateway';
 import { CreditsModule } from '../credits/credits.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -27,6 +28,9 @@ import { CreditsModule } from '../credits/credits.module';
     // El lock distribuido (Redlock) que evita que dos personas paguen
     // por la misma posición de cola al mismo tiempo.
     CreditsModule,
+    // Cerrar la noche reembolsa dinero, y un reembolso que el cliente no
+    // ve es indistinguible de un robo desde su lado.
+    NotificationsModule,
     RedisModule,
   ],
   controllers: [QueueController],

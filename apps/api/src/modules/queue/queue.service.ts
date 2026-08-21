@@ -30,6 +30,7 @@ import { User } from '../auth/entities/user.entity';
 import { VenuesService } from '../venues/venues.service';
 import { CreditsService, LedgerLine } from '../credits/credits.service';
 import { CreditTransaction } from '../credits/entities/credit-transaction.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateQueueRequestDto } from './dto/create-queue-request.dto';
 import { QueueGateway } from './queue.gateway';
 
@@ -126,6 +127,7 @@ export class QueueService {
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly creditsService: CreditsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ==============================================================
@@ -548,9 +550,31 @@ export class QueueService {
         order: { position: 'ASC' },
       });
 
+      // Se acumula POR PERSONA, no por pedido. Alguien con tres canciones
+      // en cola recibe UN aviso que dice "se te devolvieron Q3", no tres
+      // avisos de Q1. Tres notificaciones por la misma noche se sienten
+      // como un error del sistema, no como una devolución.
+      const devolucionesPorCliente = new Map<
+        string,
+        { creditos: number; gratis: number }
+      >();
+
       let creditosDevueltos = 0;
       for (const pedido of pendientes) {
-        creditosDevueltos += await this.saltarYReembolsar(manager, pedido);
+        const resultado = await this.saltarYReembolsar(manager, pedido);
+        creditosDevueltos += resultado.devuelto;
+
+        if (resultado.devuelto > 0 || resultado.gratisRestituida) {
+          const acumulado = devolucionesPorCliente.get(pedido.userId) ?? {
+            creditos: 0,
+            gratis: 0,
+          };
+          acumulado.creditos += resultado.devuelto;
+          if (resultado.gratisRestituida) {
+            acumulado.gratis += 1;
+          }
+          devolucionesPorCliente.set(pedido.userId, acumulado);
+        }
       }
 
       // POR QUÉ el cierre automático usa last_activity_at y no "ahora":
@@ -570,21 +594,67 @@ export class QueueService {
       //
       // Regla: dos instantes que se van a comparar entre sí tienen que
       // salir del mismo reloj. Aquí manda el de la base.
-      const [cerrada] = await manager.query<Array<{ closed_at: Date }>>(
+      await manager.query(
         `UPDATE venue_sessions
             SET closed_at            = COALESCE($2::timestamptz, now()),
                 closed_by_user_id    = $3,
                 closed_automatically = $4
-          WHERE id = $1
-        RETURNING closed_at`,
+          WHERE id = $1`,
         [sesion.id, params.closedAt ?? null, closedByUserId, automatic],
       );
 
       // La entidad en memoria quedó desactualizada tras el UPDATE crudo;
-      // se sincroniza para que el resumen mida la duración correcta.
-      sesion.closedAt = cerrada.closed_at;
+      // se relee para que el resumen mida la duración correcta.
+      //
+      // ANTES esto usaba `UPDATE ... RETURNING closed_at` y leía
+      // `resultado[0].closed_at`. No funcionaba: para un UPDATE, el
+      // driver de TypeORM devuelve `[filas, cantidadAfectada]`, así que
+      // `resultado[0]` era el ARREGLO de filas y `.closed_at` salía
+      // undefined. La duración que devolvía este endpoint estaba mal, y
+      // ninguna prueba lo agarró porque `undefined === null` también da
+      // false y el campo `abierta` salía correcto por casualidad.
+      //
+      // Una relectura explícita cuesta una consulta y no depende de
+      // adivinar la forma del resultado.
+      const cerrada = await manager.findOneOrFail(VenueSession, {
+        where: { id: sesion.id },
+      });
+      sesion.closedAt = cerrada.closedAt;
       sesion.closedByUserId = closedByUserId;
       sesion.closedAutomatically = automatic;
+
+      // Los avisos van DENTRO de la transacción, con el mismo manager.
+      // Si el cierre falla, no queda un aviso diciéndole a alguien que le
+      // devolvimos dinero que en realidad nunca se movió.
+      //
+      // Esto es seguro porque crear() solo ESCRIBE: el correo lo manda el
+      // job de la mañana. Si aquí se enviara el correo y la transacción
+      // se deshiciera, el correo ya habría salido y no hay forma de
+      // des-enviarlo.
+      if (devolucionesPorCliente.size > 0) {
+        const [local] = await manager.query<Array<{ name: string }>>(
+          `SELECT name FROM venues WHERE id = $1`,
+          [venueId],
+        );
+        const nombreLocal = local?.name ?? 'el negocio';
+
+        for (const [userId, devuelto] of devolucionesPorCliente) {
+          await this.notifications.crear({
+            userId,
+            venueId,
+            type: 'refund_night_close',
+            title: this.tituloDeDevolucion(devuelto),
+            body: this.cuerpoDeDevolucion(devuelto, nombreLocal),
+            data: {
+              creditos: devuelto.creditos,
+              cancionesGratisRestituidas: devuelto.gratis,
+              sessionId: sesion.id,
+            },
+            porCorreo: true,
+            manager,
+          });
+        }
+      }
 
       return this.construirResumen(manager, sesion, {
         pedidosReembolsados: pendientes.length,
@@ -705,8 +775,51 @@ export class QueueService {
   // (Single Responsibility a nivel de método, no solo de clase).
   // ==============================================================
 
-  // Saltar un pedido y devolver lo que se le cobró. Devuelve cuántos
-  // créditos se reembolsaron.
+  // Textos del aviso de devolución.
+  //
+  // Están separados del resto porque son lo ÚNICO de este archivo que lee
+  // un cliente. El tono importa: la persona pagó y no escuchó su canción,
+  // así que el aviso tiene que decir qué pasó, cuánto volvió y que no
+  // tiene que hacer nada. Un mensaje frío aquí confirma la sospecha de
+  // que la app se quedó con su dinero.
+  private tituloDeDevolucion(devuelto: {
+    creditos: number;
+    gratis: number;
+  }): string {
+    if (devuelto.creditos > 0 && devuelto.gratis > 0) {
+      return `Te devolvimos Q${devuelto.creditos} y tu canción gratis`;
+    }
+    if (devuelto.creditos > 0) {
+      return `Te devolvimos Q${devuelto.creditos}`;
+    }
+    return 'Recuperaste tu canción gratis';
+  }
+
+  private cuerpoDeDevolucion(
+    devuelto: { creditos: number; gratis: number },
+    nombreLocal: string,
+  ): string {
+    const partes: string[] = [];
+
+    if (devuelto.creditos > 0) {
+      partes.push(`Q${devuelto.creditos} a tu saldo de ${nombreLocal}`);
+    }
+    if (devuelto.gratis > 0) {
+      partes.push(
+        devuelto.gratis === 1
+          ? 'tu canción gratis'
+          : `tus ${devuelto.gratis} canciones gratis`,
+      );
+    }
+
+    return (
+      `La noche en ${nombreLocal} se cerró antes de que sonara tu música. ` +
+      `Te devolvimos ${partes.join(' y ')}. ` +
+      `No tenés que hacer nada: ya está disponible para tu próxima visita.`
+    );
+  }
+
+  // Saltar un pedido y devolver lo que se le cobró.
   //
   // Vive aparte porque tiene DOS usuarios con la misma regla: el skip
   // individual del DJ y el cierre de la noche. Si estuviera duplicado,
@@ -714,12 +827,16 @@ export class QueueService {
   // los dos lugares — y ese es exactamente el bug que no se nota hasta
   // que un cliente reclama.
   //
+  // Devuelve las DOS formas de devolución, no solo los créditos: una
+  // canción gratis saltada no mueve saldo (su neto era cero) pero sí es
+  // algo que el cliente recuperó, y tiene derecho a que se lo digan.
+  //
   // Asume que el pedido ya fue validado (existe, es del local, está en
   // estado 'queued'). No abre transacción: participa en la del que llama.
   private async saltarYReembolsar(
     manager: EntityManager,
     request: QueueRequest,
-  ): Promise<number> {
+  ): Promise<{ devuelto: number; gratisRestituida: boolean }> {
     const { neto, fueGratis } = await this.netoCobrado(manager, request.id);
 
     // Si se cobró algo, se devuelve completo. `neto` es negativo, así
@@ -744,6 +861,7 @@ export class QueueService {
     // Canción gratis saltada por el local: no hay crédito que devolver
     // (el neto fue cero), pero el cliente perdió su promoción sin recibir
     // nada. Como el local incumplió, se le restituye.
+    let gratisRestituida = false;
     if (fueGratis) {
       const usuario = await manager.findOne(User, {
         where: { id: request.userId },
@@ -752,13 +870,14 @@ export class QueueService {
       if (usuario) {
         usuario.freeSongUsed = false;
         await manager.save(usuario);
+        gratisRestituida = true;
       }
     }
 
     request.status = 'skipped';
     await manager.save(request);
 
-    return devuelto;
+    return { devuelto, gratisRestituida };
   }
 
   // Arma las métricas de una noche, abierta o cerrada.

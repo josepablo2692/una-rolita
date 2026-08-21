@@ -33,6 +33,7 @@ import { VenueSession } from '../src/modules/venues/entities/venue-session.entit
 import { QueueRequest } from '../src/modules/queue/entities/queue-request.entity';
 import { QueueService } from '../src/modules/queue/queue.service';
 import { CreditsService } from '../src/modules/credits/credits.service';
+import { MAILER } from '../src/modules/notifications/mailer.interface';
 
 const CLAVE = 'Prueba2026!';
 const ROL_VENUE_ADMIN = 2;
@@ -152,7 +153,13 @@ describe('Cierre de la noche (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      // Ninguna prueba manda correos de verdad. Cerrar la noche crea
+      // avisos con el correo en 'pending' —lo despacha el job de las 9—
+      // así que este reemplazo es red de seguridad, no necesidad.
+      .overrideProvider(MAILER)
+      .useValue({ enviar: () => Promise.resolve() })
+      .compile();
 
     app = moduleFixture.createNestApplication();
     setupApp(app);
@@ -195,6 +202,28 @@ describe('Cierre de la noche (e2e)', () => {
     );
     await dataSource.query(
       `ALTER TABLE credit_transactions ENABLE TRIGGER trg_credit_transactions_immutable`,
+    );
+
+    // notification_deliveries tiene trigger de inmutabilidad, igual que
+    // el libro mayor. Un DELETE en cascada desde users lo dispara y
+    // revienta la limpieza, así que se desactiva mientras se borra.
+    await dataSource.query(
+      `ALTER TABLE notification_deliveries DISABLE TRIGGER trg_notification_deliveries_immutable`,
+    );
+    if (creados.length > 0) {
+      await dataSource.query(
+        `DELETE FROM notification_deliveries
+          WHERE notification_id IN
+            (SELECT id FROM notifications WHERE user_id = ANY($1::uuid[]))`,
+        [creados],
+      );
+      await dataSource.query(
+        `DELETE FROM notifications WHERE user_id = ANY($1::uuid[])`,
+        [creados],
+      );
+    }
+    await dataSource.query(
+      `ALTER TABLE notification_deliveries ENABLE TRIGGER trg_notification_deliveries_immutable`,
     );
 
     await dataSource.query(`DELETE FROM queue_jumps WHERE venue_id = $1`, [
@@ -286,6 +315,14 @@ describe('Cierre de la noche (e2e)', () => {
     expect(res.body.abierta).toBe(false);
     expect(res.body.closedAutomatically).toBe(false);
     expect(res.body.cancionesEnCola).toBe(0);
+
+    // `closedAt` y `duracionMinutos` se afirman explícitamente porque
+    // ANTES venían mal —el UPDATE ... RETURNING no devolvía lo que
+    // creíamos— y `abierta` salía correcto de casualidad. Un campo que
+    // solo se verifica de rebote no está verificado.
+    expect(res.body.closedAt).not.toBeNull();
+    expect(typeof res.body.duracionMinutos).toBe('number');
+    expect(res.body.duracionMinutos).toBeGreaterThanOrEqual(0);
     expect(res.body.creditosDevueltosAlCerrar).toBe(
       PRECIO_SALTO + PRECIO_CANCION,
     );
@@ -556,5 +593,84 @@ describe('Cierre de la noche (e2e)', () => {
       .get(`/venues/${venue.id}/queue/sessions/esto-no-es-un-uuid`)
       .set('Authorization', `Bearer ${tokenDj}`)
       .expect(400);
+  }, 60000);
+
+  // ==============================================================
+  // EL AVISO — sin esto, el reembolso es invisible para el cliente
+  //
+  // Es el caso del que salió esta funcionalidad: alguien pagó, no
+  // escuchó su canción, y a las 2 a.m. tiene la app cerrada. El
+  // WebSocket no lo alcanza. Si no queda un mensaje esperándolo, desde
+  // su lado la app simplemente se quedó con su dinero.
+  // ==============================================================
+  it('13) al cerrar la noche, al cliente le queda un aviso con lo devuelto', async () => {
+    const cliente = await crearUsuario({
+      etiqueta: 'avisado',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 20,
+    });
+    await pedir(cliente.token, true); // salto de cola: Q5
+
+    await cerrarNoche().expect(201);
+    expect(await saldoDe(cliente.id)).toBe(20);
+
+    const bandeja = await request(app.getHttpServer())
+      .get('/me/notifications')
+      .set('Authorization', `Bearer ${cliente.token}`)
+      .expect(200);
+
+    const aviso = (bandeja.body as Array<Record<string, unknown>>).find(
+      (a) => a.type === 'refund_night_close',
+    );
+
+    expect(aviso).toBeDefined();
+    expect(aviso?.title).toContain('Q5');
+    expect(aviso?.readAt).toBeNull();
+    // El correo NO salió todavía: lo agrupa y manda el job de las 9 a.m.
+    // Nadie recibe un correo a las 2 de la mañana por cada canción.
+    expect(aviso?.emailStatus).toBe('pending');
+
+    const contador = await request(app.getHttpServer())
+      .get('/me/notifications/unread-count')
+      .set('Authorization', `Bearer ${cliente.token}`)
+      .expect(200);
+    expect(contador.body.sinLeer).toBeGreaterThanOrEqual(1);
+
+    // Marcar leído dos veces devuelve 200 las dos: un doble clic en la
+    // app no puede parecer que el aviso se borró.
+    const id = aviso?.id as string;
+    await request(app.getHttpServer())
+      .patch(`/me/notifications/${id}/read`)
+      .set('Authorization', `Bearer ${cliente.token}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`/me/notifications/${id}/read`)
+      .set('Authorization', `Bearer ${cliente.token}`)
+      .expect(200);
+  }, 60000);
+
+  it('14) nadie ve los avisos de otra persona', async () => {
+    const ajeno = await crearUsuario({
+      etiqueta: 'ajeno',
+      rol: ROL_VENUE_ADMIN,
+      creditos: 20,
+    });
+    await pedir(ajeno.token);
+    await cerrarNoche().expect(201);
+
+    const suyos = await request(app.getHttpServer())
+      .get('/me/notifications')
+      .set('Authorization', `Bearer ${ajeno.token}`)
+      .expect(200);
+    const idAjeno = (suyos.body as Array<Record<string, unknown>>)[0]
+      ?.id as string;
+    expect(idAjeno).toBeDefined();
+
+    // El DJ intenta marcar como leído un aviso que no es suyo. Recibe el
+    // MISMO 404 que si el id no existiera: no se revela si es real.
+    await request(app.getHttpServer())
+      .patch(`/me/notifications/${idAjeno}/read`)
+      .set('Authorization', `Bearer ${tokenDj}`)
+      .expect(404);
   }, 60000);
 });
